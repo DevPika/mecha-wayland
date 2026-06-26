@@ -38,6 +38,9 @@ pub enum TouchEvent {
     /// A single tap gesture was detected.
     Tap { id: i32, x: f64, y: f64 },
 
+    /// Hold gesture.
+    Hold { id: i32, x: f64, y: f64 },
+
     /// A swipe gesture was detected.
     Swipe {
         direction: SwipeDirection,

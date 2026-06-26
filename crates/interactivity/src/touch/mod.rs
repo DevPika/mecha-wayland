@@ -134,8 +134,12 @@ impl TouchState {
                     let duration_ms = time.saturating_sub(active.start_time);
 
                     // Check for Tap: small movement and short duration
-                    if distance < TAP_MAX_DISTANCE && duration_ms < TAP_MAX_DURATION_MS {
-                        events.push(TouchEvent::Tap { id: *id, x, y });
+                    if distance < TAP_MAX_DISTANCE {
+                        if duration_ms < TAP_MAX_DURATION_MS {
+                            events.push(TouchEvent::Tap { id: *id, x, y });
+                        } else {
+                            events.push(TouchEvent::Hold { id: *id, x, y });
+                        }
                     } else if distance >= SWIPE_MIN_DISTANCE && duration_ms <= SWIPE_MAX_DURATION_MS
                     {
                         // Check for Swipe: larger movement (>=40px) and fast motion (<=500ms)
