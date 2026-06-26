@@ -32,7 +32,6 @@ use wayland::Wayland;
 
 const CLICK_MAX_DISTANCE: f64 = 10.0;
 const CLICK_MAX_DURATION_MS: u64 = 300;
-const BTN_LEFT: u32 = 272;
 
 type NotificationList = Div<(
     NotificationEntry<CardContent>,
@@ -499,7 +498,7 @@ fn main() {
         .mount(
             app::Module::new().on(|s: &mut AppState, ev: &PointerEvent| match ev {
                 PointerEvent::ButtonPress {
-                    button: BTN_LEFT,
+                    button: interactivity::pointer::mouse_button::LEFT,
                     x,
                     y,
                     time,
@@ -549,7 +548,7 @@ fn main() {
                 }
 
                 PointerEvent::ButtonRelease {
-                    button: BTN_LEFT,
+                    button: interactivity::pointer::mouse_button::LEFT,
                     x,
                     y,
                     time,

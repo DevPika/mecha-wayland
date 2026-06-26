@@ -4,6 +4,15 @@ pub use event::PointerEvent;
 
 use wayland::{ButtonState, PointerEvent as WlPointerEvent};
 
+// Alternatively struct and into / conversions can be defined for a proper type MouseButton type
+pub mod mouse_button {
+    pub const LEFT: u32 = 272;
+    pub const RIGHT: u32 = 273;
+    pub const MIDDLE: u32 = 274;
+    pub const BACK: u32 = 275;
+    pub const FORWARD: u32 = 276;
+}
+
 #[derive(Debug, Default)]
 pub struct PointerState {
     /// Last known surface-relative cursor X coordinate.
