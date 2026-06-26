@@ -30,8 +30,6 @@ use io_ring::Ring;
 use timer::Timer;
 use wayland::Wayland;
 
-const TOUCH_SLOP: f64 = 20.0;
-const HOLD_DURATION_MS: u32 = 500;
 const CLICK_MAX_DISTANCE: f64 = 10.0;
 const CLICK_MAX_DURATION_MS: u64 = 300;
 const BTN_LEFT: u32 = 272;
@@ -164,7 +162,7 @@ impl UiState {
             if !g.hold_fired
                 && !g.hold_cancelled
                 && self.now.saturating_sub(g.mono_start)
-                    >= Duration::from_millis(HOLD_DURATION_MS as u64)
+                    >= Duration::from_millis(interactivity::touch::TAP_MAX_DURATION_MS as u64)
             {
                 Some(g.entry_idx)
             } else {
@@ -316,26 +314,24 @@ fn main() {
                 try_redraw(s, false);
             },
         ))
-        .mount(
-            app::Module::new().on(|s: &mut AppState, _: &app::PrePoll| {
-                if let Some(at) = s.ui.callback_set_at {
-                    if at.elapsed().as_millis() > 200 {
-                        s.ui.pending_callback_id = 0;
-                        s.ui.callback_set_at = None;
+        .mount(app::Module::new().on(|s: &mut AppState, _: &app::PrePoll| {
+            if let Some(at) = s.ui.callback_set_at {
+                if at.elapsed().as_millis() > 200 {
+                    s.ui.pending_callback_id = 0;
+                    s.ui.callback_set_at = None;
+                }
+            }
+            if s.ui.pending_callback_id == 0 {
+                s.ui.refresh_now();
+                let animating = s.ui.tick_animations();
+                if animating || s.ui.needs_redraw {
+                    s.ui.needs_redraw = false;
+                    if !try_redraw(s, animating) {
+                        s.ui.needs_redraw = true;
                     }
                 }
-                if s.ui.pending_callback_id == 0 {
-                    s.ui.refresh_now();
-                    let animating = s.ui.tick_animations();
-                    if animating || s.ui.needs_redraw {
-                        s.ui.needs_redraw = false;
-                        if !try_redraw(s, animating) {
-                            s.ui.needs_redraw = true;
-                        }
-                    }
-                }
-            }),
-        )
+            }
+        }))
         .mount(
             app::Module::new().on(|s: &mut AppState, ev: &wayland::WlCallbackEvent| {
                 let wayland::WlCallbackEvent::Done {
@@ -395,10 +391,14 @@ fn main() {
                         };
                         let elapsed = time.saturating_sub(a.start_time);
                         let td = (x - a.start_x, y - a.start_y);
-                        if (td.0 * td.0 + td.1 * td.1).sqrt() > TOUCH_SLOP {
+                        if (td.0 * td.0 + td.1 * td.1).sqrt()
+                            > interactivity::touch::TAP_MAX_DISTANCE
+                        {
                             a.hold_cancelled = true;
                         }
-                        hold = if !a.hold_fired && !a.hold_cancelled && elapsed >= HOLD_DURATION_MS
+                        hold = if !a.hold_fired
+                            && !a.hold_cancelled
+                            && elapsed >= interactivity::touch::TAP_MAX_DURATION_MS
                         {
                             a.hold_fired = true;
                             Some(a.entry_idx)
@@ -427,7 +427,9 @@ fn main() {
                     let Some(ref mut a) = s.ui.active_gesture else {
                         return;
                     };
-                    if (total_dx * total_dx + total_dy * total_dy).sqrt() > TOUCH_SLOP {
+                    if (total_dx * total_dx + total_dy * total_dy).sqrt()
+                        > interactivity::touch::TAP_MAX_DISTANCE
+                    {
                         a.hold_cancelled = true;
                     }
                     let idx = a.entry_idx;
@@ -516,10 +518,14 @@ fn main() {
                         };
                         let elapsed = time.saturating_sub(a.start_time);
                         let td = (x - a.start_x, y - a.start_y);
-                        if (td.0 * td.0 + td.1 * td.1).sqrt() > TOUCH_SLOP {
+                        if (td.0 * td.0 + td.1 * td.1).sqrt()
+                            > interactivity::touch::TAP_MAX_DISTANCE
+                        {
                             a.hold_cancelled = true;
                         }
-                        hold = if !a.hold_fired && !a.hold_cancelled && elapsed >= HOLD_DURATION_MS
+                        hold = if !a.hold_fired
+                            && !a.hold_cancelled
+                            && elapsed >= interactivity::touch::TAP_MAX_DURATION_MS
                         {
                             a.hold_fired = true;
                             Some(a.entry_idx)
@@ -824,9 +830,10 @@ fn create_wl_buffer(
         modifier_hi,
         modifier_lo,
     );
-    let buf_id = wayland
-        .buf_params
-        .create_immed(params_id, width, height, DrmFourcc::Argb8888 as u32, 0);
+    let buf_id =
+        wayland
+            .buf_params
+            .create_immed(params_id, width, height, DrmFourcc::Argb8888 as u32, 0);
     wayland.buf_params.destroy(params_id);
     buf_id
 }

@@ -5,8 +5,8 @@ pub use event::{DragState, SwipeDirection, TouchEvent};
 use std::collections::HashMap;
 use wayland::TouchEvent as WlTouchEvent;
 
-const TAP_MAX_DISTANCE: f64 = 15.0;
-const TAP_MAX_DURATION_MS: u32 = 300;
+pub const TAP_MAX_DISTANCE: f64 = 15.0; // aka Touch slop
+pub const TAP_MAX_DURATION_MS: u32 = 300; // Tap becomes hold
 const SWIPE_MIN_DISTANCE: f64 = 40.0;
 const SWIPE_MAX_DURATION_MS: u32 = 500;
 
