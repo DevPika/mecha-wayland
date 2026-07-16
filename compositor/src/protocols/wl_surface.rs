@@ -229,6 +229,18 @@ impl SurfaceRole {
     }
 }
 
+// ── Hit-test result ─────────────────────────────────────────────────────────────
+
+/// Describes a hit-test result from [`SurfaceState::hit_test`].
+pub struct HitSurface {
+    pub id: ObjectId,
+    /// Handle of the surface on the *client's* connection.
+    pub handle: Handle<WlSurface>,
+    /// Surface-local coordinates.
+    pub local_x: i32,
+    pub local_y: i32,
+}
+
 // ── Module state ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, State)]
@@ -243,6 +255,49 @@ impl SurfaceState {
             surfaces: HashMap::new(),
             regions: HashMap::new(),
         }
+    }
+
+    /// Find the client surface at the given compositor-window coordinates.
+    ///
+    /// Surfaces are positioned in a simple overlapping stack starting at (0, 0).
+    /// The *last* matching surface wins (most-recently-created / top-of-stack).
+    pub fn hit_test(
+        &self,
+        buffers: &HashMap<ObjectId, crate::protocols::wl_shm::ShmBuffer>,
+        wx: i32,
+        wy: i32,
+    ) -> Option<HitSurface> {
+        let mut result: Option<HitSurface> = None;
+
+        for (id, sdata) in &self.surfaces {
+            // Use buffer dimensions for hit-testing if available.
+            let (bw, bh) = sdata
+                .current
+                .buffer
+                .and_then(|buf_id| buffers.get(&buf_id))
+                .map(|b| (b.width, b.height))
+                .unwrap_or((0, 0));
+
+            if bw <= 0 || bh <= 0 {
+                continue;
+            }
+
+            // Default position is (0, 0). The input region (if set) restricts
+            // where the surface accepts events.
+            let accepts =
+                sdata.accepts_input_at(wx, wy) && (wx >= 0 && wx < bw && wy >= 0 && wy < bh);
+
+            if accepts {
+                result = Some(HitSurface {
+                    id: *id,
+                    handle: sdata.handle.clone(),
+                    local_x: wx,
+                    local_y: wy,
+                });
+            }
+        }
+
+        result
     }
 }
 

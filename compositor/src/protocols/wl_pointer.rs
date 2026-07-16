@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use app::{RegisteredModule, prelude::*};
 use wayland::{
     Handle, ObjectId, WaylandProxy, WlCompositorRequest, WlPointer, WlPointerEvent,
-    WlPointerRequest, WlSeatCapability, WlSeatRequest, WlSurface,
+    WlPointerRequest, WlSeatCapability, WlSeatRequest,
 };
 
 use crate::{Compositor, protocols::wl_surface::SurfaceData};
@@ -65,81 +65,7 @@ impl WlPointerState {
     }
 }
 
-// ── Surface layout / hit-test ───────────────────────────────────────────────────
-
-/// Describes a hit-test result.
-struct HitSurface {
-    id: ObjectId,
-    /// Handle of the surface on the *client's* connection.
-    handle: Handle<WlSurface>,
-    /// Surface-local coordinates.
-    local_x: i32,
-    local_y: i32,
-    /// Width and height of the surface buffer (for bounds checking).
-    width: i32,
-    height: i32,
-}
-
-/// Find the client surface at the given compositor-window coordinates.
-///
-/// Surfaces are positioned in a simple overlapping stack starting at (0,0).
-/// The *last* matching surface wins (most-recently-created / top-of-stack).
-fn hit_test(
-    surfaces: &HashMap<ObjectId, SurfaceData>,
-    buffers: &HashMap<ObjectId, crate::protocols::wl_shm::ShmBuffer>,
-    wx: i32,
-    wy: i32,
-) -> Option<HitSurface> {
-    let mut result: Option<HitSurface> = None;
-
-    for (id, sdata) in surfaces {
-        // Use buffer dimensions for hit-testing if available.
-        let (bw, bh) = sdata
-            .current
-            .buffer
-            .and_then(|buf_id| buffers.get(&buf_id))
-            .map(|b| (b.width, b.height))
-            .unwrap_or((0, 0));
-
-        if bw <= 0 || bh <= 0 {
-            continue;
-        }
-
-        // Default position is (0, 0). The input region (if set) restricts
-        // where the surface accepts events.
-        let input_region = sdata.current.input_region.as_deref();
-        let accepts = match input_region {
-            None => wx >= 0 && wx < bw && wy >= 0 && wy < bh,
-            Some(region) => region.contains(wx, wy),
-        };
-
-        if accepts {
-            result = Some(HitSurface {
-                id: *id,
-                handle: sdata.handle.clone(),
-                local_x: wx,
-                local_y: wy,
-                width: bw,
-                height: bh,
-            });
-        }
-    }
-
-    result
-}
-
 // ── Client-pointer lookup ───────────────────────────────────────────────────────
-
-/// Return the first `Handle<WlPointer>` in `pointers` that belongs to the same
-/// Wayland connection as `surface`.
-fn pointer_for_surface<'a>(
-    pointers: &'a [Handle<WlPointer>],
-    surface: &Handle<WlSurface>,
-) -> Option<&'a Handle<WlPointer>> {
-    pointers
-        .iter()
-        .find(|p| p.is_alive() && p.proxy.is_same_connection(&surface.proxy))
-}
 
 /// Send a pointer event to every *alive* client pointer that belongs to the
 /// same connection as `proxy`.  Returns the number of pointers that were sent to.
@@ -211,12 +137,9 @@ pub fn module<S>() -> impl RegisteredModule<Compositor, S> {
                     let new_serial;
 
                     // Phase 1 – immutable: hit-test surfaces.
-                    let hit = hit_test(
-                        &compositor.surfaces.surfaces,
-                        &compositor.shm.buffers,
-                        wx,
-                        wy,
-                    );
+                    let hit = compositor
+                        .surfaces
+                        .hit_test(&compositor.shm.buffers, wx, wy);
 
                     // Phase 2 – mutable: update pointer state.
                     {
@@ -331,12 +254,10 @@ pub fn module<S>() -> impl RegisteredModule<Compositor, S> {
                     let serial = state.next_serial();
                     state_clear_focus(state, &compositor.surfaces.surfaces, serial);
 
-                    if let Some(hs) = hit_test(
-                        &compositor.surfaces.surfaces,
-                        &compositor.shm.buffers,
-                        wx,
-                        wy,
-                    ) {
+                    if let Some(hs) = compositor
+                        .surfaces
+                        .hit_test(&compositor.shm.buffers, wx, wy)
+                    {
                         send_to_client_ptrs(&state.client_pointers, &hs.handle.proxy, |p| {
                             p.enter(serial, &hs.handle, hs.local_x, hs.local_y)
                         });
