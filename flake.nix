@@ -107,9 +107,9 @@
             pkgs.cargo-watch
           ];
 
-          buildInputs = with pkgs; [ mesa libdrm libgbm libGL wayland wayland-protocols libxkbcommon ];
+          buildInputs = with pkgs; [ mesa libdrm libgbm libGL wayland wayland-protocols libxkbcommon seatd udev libinput ];
 
-          LD_LIBRARY_PATH = lib.makeLibraryPath (with pkgs; [ mesa libdrm libgbm libGL ]);
+          LD_LIBRARY_PATH = lib.makeLibraryPath (with pkgs; [ mesa libdrm libgbm libGL wayland wayland-protocols seatd udev libinput ]);
 
           RUST_SRC_PATH  = "${devToolchain}/lib/rustlib/src/rust/library";
           RUST_BACKTRACE = "1";
