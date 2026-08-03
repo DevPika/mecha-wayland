@@ -521,7 +521,7 @@ dependencies = [
  "launcher-status-bar",
  "launcher-volume",
  "notification",
- "ui-macro",
+ "ui",
  "window-manager",
 ]
 
