@@ -14,11 +14,14 @@ pub struct DrawMonochromeSprite {
     pub size: Size,
     pub color: Color,
     pub background: Color,
+    /// Author opt-out of the opaque fast path (default `true` at the UI). The
+    /// path is taken only when this holds *and* `background` is opaque.
+    pub is_opaque: bool,
 }
 
 impl Command for DrawMonochromeSprite {
     fn record(self, registry: &mut CommandQueueRegistry) {
-        if self.background.a >= 1.0 {
+        if self.is_opaque && self.background.a >= 1.0 {
             registry.opaque.push_sprite(OpaquePrim {
                 origin: self.origin,
                 z: self.z,

@@ -270,7 +270,11 @@ impl<T: WidgetList + 'static> AnyWindow for Window<T> {
             );
         }
 
-        let commands = self.ui.render_children(&self.tree, Point::ZERO);
+        // Seed the walk: root depth 0, and the window clear colour as the
+        // opaque background every glyph/quad composites against.
+        let commands = self
+            .ui
+            .render_children(&self.tree, Point::ZERO, 0.0, clear_color);
 
         self.hit_areas.clear();
         for cmd in &commands {

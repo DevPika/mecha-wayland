@@ -80,6 +80,25 @@ impl Color {
     pub fn to_vec4(self) -> Vec4 {
         Vec4::new(self.r, self.g, self.b, self.a)
     }
+
+    /// Source-over composite: `self` painted over `under`. When `under` is
+    /// opaque (the common case) this collapses to a straight lerp toward `self`
+    /// by `self.a`, and the result stays opaque. Used to accumulate the solid
+    /// background behind a glyph/quad down the widget tree.
+    #[inline]
+    pub fn over(self, under: Color) -> Color {
+        let a = self.a + under.a * (1.0 - self.a);
+        if a <= 0.0 {
+            return Color::TRANSPARENT;
+        }
+        let f = |top: f32, bot: f32| (top * self.a + bot * under.a * (1.0 - self.a)) / a;
+        Color {
+            r: f(self.r, under.r),
+            g: f(self.g, under.g),
+            b: f(self.b, under.b),
+            a,
+        }
+    }
 }
 
 impl From<(f32, f32, f32, f32)> for Color {
@@ -353,5 +372,37 @@ impl Rect {
         let right = self.right().max(other.right());
         let bottom = self.bottom().max(other.bottom());
         Rect::new(x, y, right - x, bottom - y)
+    }
+}
+
+#[cfg(test)]
+mod color_tests {
+    use super::Color;
+
+    #[test]
+    fn over_opaque_top_is_that_colour() {
+        // A fully-opaque source ignores whatever is under it.
+        let red = Color::rgb(1.0, 0.0, 0.0);
+        let out = red.over(Color::rgb(0.0, 0.0, 1.0));
+        assert_eq!(out, red);
+    }
+
+    #[test]
+    fn over_opaque_under_stays_opaque_and_lerps() {
+        // Translucent white over opaque black → opaque mid-grey.
+        let out = Color::rgba(1.0, 1.0, 1.0, 0.5).over(Color::BLACK);
+        assert_eq!(out.a, 1.0);
+        assert!((out.r - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn over_transparent_top_is_under() {
+        let under = Color::rgba(0.2, 0.4, 0.6, 1.0);
+        assert_eq!(Color::TRANSPARENT.over(under), under);
+    }
+
+    #[test]
+    fn over_both_transparent_is_transparent() {
+        assert_eq!(Color::TRANSPARENT.over(Color::TRANSPARENT), Color::TRANSPARENT);
     }
 }

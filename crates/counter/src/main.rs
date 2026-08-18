@@ -108,6 +108,7 @@ impl Counter {
             style: row_style(),
             bounds: Rect::ZERO,
             pending_damage: Damage::None,
+            is_opaque: true,
             count: 0,
             hovered: None,
             children: (button("-"), glyph("0", COUNT), button("+")),

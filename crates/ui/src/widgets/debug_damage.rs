@@ -31,12 +31,20 @@ impl<Inner: WidgetList> WidgetList for DebugDamage<Inner> {
         self.inner.build_children(tree)
     }
 
-    fn render_children(&mut self, tree: &WidgetTree, parent_abs: Point) -> Vec<RenderCommand> {
-        let mut commands = self.inner.render_children(tree, parent_abs);
+    fn render_children(
+        &mut self,
+        tree: &WidgetTree,
+        parent_abs: Point,
+        z: f32,
+        background: Color,
+    ) -> Vec<RenderCommand> {
+        let mut commands = self.inner.render_children(tree, parent_abs, z, background);
 
         let color = PALETTE[self.frame % PALETTE.len()];
         self.frame = self.frame.wrapping_add(1);
 
+        // The tint must always blend on top of everything: top `z`, and
+        // `is_opaque: false` so it never flattens onto the opaque pass.
         commands.push(RenderCommand::DrawQuad {
             color,
             border_color: Color::TRANSPARENT,
@@ -45,6 +53,8 @@ impl<Inner: WidgetList> WidgetList for DebugDamage<Inner> {
             size: USize::new(COVER, COVER),
             border_radius: 0.0,
             border_thickness: 0.0,
+            background: Color::TRANSPARENT,
+            is_opaque: false,
         });
         commands
     }

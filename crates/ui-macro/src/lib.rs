@@ -30,7 +30,9 @@ impl Parse for WidgetArg {
 /// Transforms a named struct into a widget.
 ///
 /// Injects private `node_id: taffy::NodeId`, `style: taffy::Style`,
-/// `bounds: utils::Rect`, and `pending_damage: ui::Damage` fields, then generates
+/// `bounds: utils::Rect`, `pending_damage: ui::Damage`, and a public
+/// `is_opaque: bool` (opt-out of the opaque fast path; init to `true`) fields,
+/// then generates
 /// `impl Widget` (including `drain_damage`), an `impl OnChange<Style>`, and the
 /// inherent `set::<T>` method. The `bounds` field caches the widget's current
 /// **absolute** on-screen rect; the render walk writes it (it is the only pass
@@ -71,11 +73,12 @@ pub fn widget(attr: TokenStream, input: TokenStream) -> TokenStream {
         f.attrs.retain(|a| !a.path().is_ident("widget"));
     }
 
-    // Inject node_id, style, bounds, and pending_damage at the front (private).
     let node_id_field: Field = parse_quote!(node_id: ::taffy::NodeId);
     let style_field: Field = parse_quote!(style: ::taffy::Style);
     let bounds_field: Field = parse_quote!(bounds: ::utils::Rect);
     let pending_damage_field: Field = parse_quote!(pending_damage: ::ui::Damage);
+    let is_opaque_field: Field = parse_quote!(pub is_opaque: bool);
+    named.insert(0, is_opaque_field);
     named.insert(0, pending_damage_field);
     named.insert(0, bounds_field);
     named.insert(0, style_field);
@@ -107,6 +110,8 @@ pub fn widget(attr: TokenStream, input: TokenStream) -> TokenStream {
                 layout: &::taffy::Layout,
                 tree: &::ui::WidgetTree,
                 offset: ::ui::Point,
+                z: f32,
+                background: ::utils::Color,
             ) -> ::std::vec::Vec<::ui::RenderCommand> {
                 #render_node_body
             }
@@ -179,25 +184,33 @@ fn build_tree_body(child_fields: &[Ident], is_measure: bool) -> TokenStream2 {
 }
 
 fn render_node_body(child_fields: &[Ident]) -> TokenStream2 {
+    let own = quote! {
+        let __abs = ::ui::Point::new(offset.x() + layout.location.x, offset.y() + layout.location.y);
+        self.bounds = ::utils::Rect {
+            origin: __abs,
+            size: ::utils::Size::new(layout.size.width, layout.size.height),
+        };
+        let mut __cmds = ::ui::Render::render(self, layout, __abs);
+        for __cmd in &mut __cmds {
+            __cmd.stamp(z, background, self.is_opaque);
+        }
+    };
+
     if child_fields.is_empty() {
         quote! {
-            let __abs = ::ui::Point::new(offset.x() + layout.location.x, offset.y() + layout.location.y);
-            self.bounds = ::utils::Rect {
-                origin: __abs,
-                size: ::utils::Size::new(layout.size.width, layout.size.height),
-            };
-            self.render(layout, __abs)
+            #own
+            __cmds
         }
     } else {
         quote! {
-            let __abs = ::ui::Point::new(offset.x() + layout.location.x, offset.y() + layout.location.y);
-            self.bounds = ::utils::Rect {
-                origin: __abs,
-                size: ::utils::Size::new(layout.size.width, layout.size.height),
-            };
-            let mut __cmds = self.render(layout, __abs);
+            #own
+            // Children descend one z-step deeper, over this node's fill.
+            let __child_z = z + ::ui::Z_STEP;
+            let __child_bg = ::ui::Render::fill(self).over(background);
             #(
-                __cmds.extend(::ui::WidgetList::render_children(&mut self.#child_fields, tree, __abs));
+                __cmds.extend(::ui::WidgetList::render_children(
+                    &mut self.#child_fields, tree, __abs, __child_z, __child_bg,
+                ));
             )*
             __cmds
         }

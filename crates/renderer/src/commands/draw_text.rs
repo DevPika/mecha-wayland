@@ -15,6 +15,8 @@ pub struct DrawText {
     pub z: f32,
     pub color: Color,
     pub background: Color,
+    /// Author opt-out of the opaque fast path; forwarded to each glyph sprite.
+    pub is_opaque: bool,
 }
 
 impl Command for DrawText {
@@ -40,6 +42,7 @@ impl Command for DrawText {
                     size: Size::new(glyph.w, glyph.h),
                     color: self.color,
                     background: self.background,
+                    is_opaque: self.is_opaque,
                 }
                 .record(registry);
             }

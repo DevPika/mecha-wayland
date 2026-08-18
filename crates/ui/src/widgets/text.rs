@@ -10,7 +10,6 @@ pub struct Text {
     pub font: Option<&'static BakedFont>,
     pub text: String,
     pub color: Color,
-    pub z: f32,
 }
 
 impl Text {
@@ -20,10 +19,10 @@ impl Text {
             style,
             bounds: Rect::ZERO,
             pending_damage: Damage::None,
+            is_opaque: true,
             font: None,
             text: String::new(),
             color: Color::WHITE,
-            z: 0.0,
         }
     }
 
@@ -70,12 +69,15 @@ impl Render for Text {
     fn render(&self, _layout: &Layout, abs_pos: Point) -> Vec<RenderCommand> {
         let Some(font) = self.font else { return vec![] };
         let origin = Point::new(abs_pos.x(), abs_pos.y() + font.ascent);
+        // `z`, `background`, and `is_opaque` are stamped by the render walk.
         vec![RenderCommand::DrawText {
             font,
             text: self.text.clone(),
             origin,
-            z: self.z,
+            z: 0.0,
             color: self.color,
+            background: Color::TRANSPARENT,
+            is_opaque: true,
         }]
     }
 }

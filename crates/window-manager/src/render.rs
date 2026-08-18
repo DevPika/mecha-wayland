@@ -79,6 +79,8 @@ pub(crate) fn submit_scene<B: SurfaceBackend>(
                 size,
                 border_radius,
                 border_thickness,
+                background,
+                is_opaque,
             } => {
                 renderer.send_command(DrawQuad {
                     color,
@@ -88,6 +90,8 @@ pub(crate) fn submit_scene<B: SurfaceBackend>(
                     size,
                     border_radius,
                     border_thickness,
+                    background,
+                    is_opaque,
                 });
             }
             RenderCommand::DrawText {
@@ -96,6 +100,8 @@ pub(crate) fn submit_scene<B: SurfaceBackend>(
                 origin,
                 z,
                 color,
+                background,
+                is_opaque,
             } => {
                 let texture_id = renderer.get_texture_id(font.atlas_id);
                 renderer.send_command(DrawText {
@@ -105,9 +111,8 @@ pub(crate) fn submit_scene<B: SurfaceBackend>(
                     origin,
                     z,
                     color,
-                    // Opaque-text variant is opt-in from the UI; until that
-                    // traversal lands, text stays on the translucent path.
-                    background: Color::TRANSPARENT,
+                    background,
+                    is_opaque,
                 });
             }
             RenderCommand::DrawMonochromeSprite {
@@ -117,6 +122,8 @@ pub(crate) fn submit_scene<B: SurfaceBackend>(
                 z,
                 size,
                 color,
+                background,
+                is_opaque,
             } => {
                 let texture_id = renderer.get_texture_id(atlas_id);
                 renderer.send_command(DrawMonochromeSprite {
@@ -126,7 +133,8 @@ pub(crate) fn submit_scene<B: SurfaceBackend>(
                     z,
                     size: RSize::new(size.width(), size.height()),
                     color,
-                    background: Color::TRANSPARENT,
+                    background,
+                    is_opaque,
                 });
             }
             _ => {}

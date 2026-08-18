@@ -4,9 +4,6 @@ use crate::commands::{
     Command, CommandQueueRegistry, opaque::OpaquePrim, translucent::TranslucentPrim,
 };
 
-/// A rounded, optionally-bordered rectangle. Always drawn in the translucent
-/// pass (its edges and corners are anti-aliased). If fully opaque, its
-/// axis-aligned interior is *also* emitted as an opaque rect so it writes depth.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct DrawQuad {
@@ -17,6 +14,10 @@ pub struct DrawQuad {
     pub size: Size,
     pub border_radius: f32,
     pub border_thickness: f32,
+    /// Solid colour behind the quad, inferred by the UI render walk.
+    pub background: Color,
+    /// Author opt-out of the opaque fast path (default `true` at the UI).
+    pub is_opaque: bool,
 }
 
 impl Command for DrawQuad {
@@ -38,7 +39,11 @@ impl Command for DrawQuad {
             });
         }
 
-        if self.color.a >= 1.0 {
+        // The flat interior goes opaque when it composites to a solid colour and
+        // the author hasn't opted out. `over` collapses to `color` when the fill
+        // is already opaque, so a natively-opaque quad behaves exactly as before.
+        let interior = self.color.over(self.background);
+        if self.is_opaque && interior.a >= 1.0 {
             let r = self.border_radius;
             let inner_w = self.size.width() - 2.0 * r;
             let inner_h = self.size.height() - 2.0 * r;
@@ -48,8 +53,8 @@ impl Command for DrawQuad {
                     origin: Point::new(self.origin.x() + r, self.origin.y() + r),
                     z: self.z + Z_EPSILON,
                     size: Size::new(inner_w, inner_h),
-                    fg: self.color,
-                    bg: self.color,
+                    fg: interior,
+                    bg: interior,
                     region: Rect::ZERO,
                     texture_id: None,
                 });
