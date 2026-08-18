@@ -1,8 +1,5 @@
 use crate::{
-    commands::{
-        clear_color::ClearColorQueue, draw_mono_sprite::MonoSpriteQueue, draw_quad::QuadQueue,
-        draw_rect::RectQueue, draw_text::DrawTextQueue,
-    },
+    commands::{clear_color::ClearColorQueue, opaque::OpaqueQueue, translucent::TranslucentQueue},
     texture::TextureStore,
 };
 
@@ -23,6 +20,9 @@ pub use draw_mono_sprite::DrawMonochromeSprite;
 mod draw_text;
 pub use draw_text::DrawText;
 
+pub(crate) mod opaque;
+pub(crate) mod translucent;
+
 pub struct RenderContext<'a> {
     pub gl: &'a glow::Context,
     pub viewport_width: u32,
@@ -30,17 +30,15 @@ pub struct RenderContext<'a> {
     pub(crate) textures: &'a TextureStore,
 }
 
-pub trait Command: Clone {
-    fn get_queue_from_registry(registry: &mut CommandQueueRegistry)
-    -> &mut impl CommandQueue<Self>;
-
-    fn on_enqueue(_registry: &mut CommandQueueRegistry, _command: &Self) {}
+pub trait Command {
+    fn record(self, registry: &mut CommandQueueRegistry);
 }
 
-pub trait CommandQueue<C: Command>: Default {
-    fn init(&mut self, ctx: &RenderContext);
-    fn enqueue(&mut self, command: C);
-    fn process(&mut self, ctx: &RenderContext);
+#[derive(Default)]
+pub struct CommandQueueRegistry {
+    pub(crate) clear: ClearColorQueue,
+    pub(crate) opaque: OpaqueQueue,
+    pub(crate) translucent: TranslucentQueue,
 }
 
 impl CommandQueueRegistry {
@@ -48,25 +46,24 @@ impl CommandQueueRegistry {
         Default::default()
     }
 
-    pub fn init_queue<C: Command>(&mut self, ctx: &RenderContext) {
-        C::get_queue_from_registry(self).init(ctx);
+    pub fn init(&mut self, ctx: &RenderContext) {
+        self.opaque.init(ctx);
+        self.translucent.init(ctx);
     }
 
-    pub fn enqueue<C: Command>(&mut self, command: C) {
-        C::on_enqueue(self, &command);
-        C::get_queue_from_registry(self).enqueue(command);
+    pub fn record<C: Command>(&mut self, command: C) {
+        command.record(self);
     }
 
-    pub fn process<C: Command>(&mut self, ctx: &RenderContext) {
-        C::get_queue_from_registry(self).process(ctx);
+    pub fn process_clear(&mut self, ctx: &RenderContext) {
+        self.clear.process(ctx);
     }
-}
 
-#[derive(Default)]
-pub struct CommandQueueRegistry {
-    clear_color_queue: ClearColorQueue,
-    draw_rect_queue: RectQueue,
-    draw_quad_queue: QuadQueue,
-    draw_mono_sprite_queue: MonoSpriteQueue,
-    draw_text_queue: DrawTextQueue,
+    pub fn process_opaque(&mut self, ctx: &RenderContext) {
+        self.opaque.process(ctx);
+    }
+
+    pub fn process_translucent(&mut self, ctx: &RenderContext) {
+        self.translucent.process(ctx);
+    }
 }

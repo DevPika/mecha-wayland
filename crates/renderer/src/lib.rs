@@ -17,6 +17,8 @@ pub use texture::{TextureFormat, TextureId};
 use crate::commands::{Command, CommandQueueRegistry, RenderContext};
 pub mod commands;
 
+pub use utils::Rect;
+
 // ── EGL platform extension ─────────────────────────────────────────────────
 
 // EGL_MESA_platform_gbm — not in the core EGL headers, must be hardcoded.
@@ -299,9 +301,29 @@ impl Renderer {
                 .bind_framebuffer(glow::FRAMEBUFFER, Some(surface.fbo));
             self.gl
                 .viewport(0, 0, surface.width as i32, surface.height as i32);
+            self.gl.disable(glow::SCISSOR_TEST);
         }
         self.viewport_width = surface.width;
         self.viewport_height = surface.height;
+    }
+
+    pub fn set_scissor(&mut self, rect: Option<Rect>) {
+        unsafe {
+            match rect {
+                Some(r) => {
+                    let vw = self.viewport_width as f32;
+                    let vh = self.viewport_height as f32;
+                    let x0 = r.x().floor().clamp(0.0, vw);
+                    let y0 = r.y().floor().clamp(0.0, vh);
+                    let x1 = r.right().ceil().clamp(0.0, vw);
+                    let y1 = r.bottom().ceil().clamp(0.0, vh);
+                    self.gl.enable(glow::SCISSOR_TEST);
+                    self.gl
+                        .scissor(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32);
+                }
+                None => self.gl.disable(glow::SCISSOR_TEST),
+            }
+        }
     }
 
     /// Upload pixel data as a GPU texture and return its `TextureId`.
@@ -404,28 +426,64 @@ impl Renderer {
         *self.atlas_map.get(&atlas_id).expect("atlas not uploaded")
     }
 
-    pub fn init_command_queue<C: Command>(&mut self) {
+    /// Compile the opaque (Shader A) and translucent (Shader B) programs. Call
+    /// once, after a surface is active so a GL context exists.
+    pub fn init_pipelines(&mut self) {
         let ctx = RenderContext {
             gl: &self.gl,
             viewport_width: self.viewport_width,
             viewport_height: self.viewport_height,
             textures: &self.textures,
         };
-        self.command_queue_registry.init_queue::<C>(&ctx);
+        self.command_queue_registry.init(&ctx);
     }
 
+    /// Queue a draw. Commands fan into the opaque/translucent pass queues; no
+    /// pixels are touched until the matching `process_*` call.
     pub fn send_command<C: Command>(&mut self, command: C) {
-        self.command_queue_registry.enqueue(command);
+        self.command_queue_registry.record(command);
     }
 
-    pub fn process_command_queue<C: Command>(&mut self) {
+    /// Apply the pending clear (colour + depth).
+    pub fn process_clear(&mut self) {
         let ctx = RenderContext {
             gl: &self.gl,
             viewport_width: self.viewport_width,
             viewport_height: self.viewport_height,
             textures: &self.textures,
         };
-        self.command_queue_registry.process::<C>(&ctx);
+        self.command_queue_registry.process_clear(&ctx);
+    }
+
+    /// Opaque pass: solid rects + opaque sprites, depth-write on, front-to-back.
+    pub fn process_opaque(&mut self) {
+        let ctx = RenderContext {
+            gl: &self.gl,
+            viewport_width: self.viewport_width,
+            viewport_height: self.viewport_height,
+            textures: &self.textures,
+        };
+        self.command_queue_registry.process_opaque(&ctx);
+    }
+
+    /// Translucent pass: quads + translucent sprites, globally z-sorted,
+    /// blended, depth-tested (early-z) against the opaque pass.
+    pub fn process_translucent(&mut self) {
+        let ctx = RenderContext {
+            gl: &self.gl,
+            viewport_width: self.viewport_width,
+            viewport_height: self.viewport_height,
+            textures: &self.textures,
+        };
+        self.command_queue_registry.process_translucent(&ctx);
+    }
+
+    /// Convenience: clear, then the opaque pass, then the translucent pass — the
+    /// whole frame in submission-agnostic paint order.
+    pub fn render_frame(&mut self) {
+        self.process_clear();
+        self.process_opaque();
+        self.process_translucent();
     }
 
     /// Block until all pending GPU commands have completed. Call this after

@@ -1,7 +1,7 @@
 use glow::{COLOR_BUFFER_BIT, DEPTH_BUFFER_BIT, HasContext};
 use utils::Color;
 
-use crate::commands::{Command, CommandQueue, RenderContext};
+use crate::commands::{Command, CommandQueueRegistry, RenderContext};
 
 #[derive(Clone, Copy)]
 pub struct ClearColor(pub Color);
@@ -21,24 +21,20 @@ impl From<Color> for ClearColor {
 }
 
 impl Command for ClearColor {
-    fn get_queue_from_registry(
-        registry: &mut super::CommandQueueRegistry,
-    ) -> &mut impl CommandQueue<Self> {
-        &mut registry.clear_color_queue
+    fn record(self, registry: &mut CommandQueueRegistry) {
+        registry.clear.set(self.0);
     }
 }
 
 #[derive(Default)]
 pub(crate) struct ClearColorQueue(Option<Color>);
 
-impl CommandQueue<ClearColor> for ClearColorQueue {
-    fn init(&mut self, _ctx: &RenderContext) {}
-
-    fn enqueue(&mut self, command: ClearColor) {
-        self.0 = Some(command.0);
+impl ClearColorQueue {
+    pub(crate) fn set(&mut self, color: Color) {
+        self.0 = Some(color);
     }
 
-    fn process(&mut self, ctx: &RenderContext) {
+    pub(crate) fn process(&mut self, ctx: &RenderContext) {
         if let Some(c) = self.0.take() {
             unsafe {
                 ctx.gl.clear_color(c.r, c.g, c.b, c.a);

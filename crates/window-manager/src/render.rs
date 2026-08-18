@@ -1,9 +1,149 @@
 use std::os::fd::AsFd;
 
-use renderer::{DmaBuf, Renderer};
+use renderer::commands::{
+    ClearColor, Color, DrawMonochromeSprite, DrawQuad, DrawText, Size as RSize,
+};
+use renderer::{DmaBuf, Rect, RenderableSurface, Renderer, SurfaceBackend};
+use ui::{Damage, RenderCommand};
 use wayland::{Handle, ZwpLinuxBufferParamsV1Flags, ZwpLinuxDmabufV1};
 
 use crate::window::Slot;
+
+pub(crate) enum FramePlan {
+    Skip,
+    /// Draw into the back slot.
+    Draw {
+        /// Whether taffy must be recomputed (a `Layout`/full frame). A `Paint`
+        /// frame reuses the existing layout, so this is `false`.
+        relayout: bool,
+        /// The region to repaint — this frame's damage unioned with what the
+        /// back slot still owed (buffer age). Feeds the GPU scissor and
+        /// `wl_surface.damage`. The full surface for a `Layout`/full frame.
+        region: Rect,
+        /// This frame's *own* damage (the full surface for a `Layout` frame),
+        /// to be added to the other slot's owed region. Distinct from `region`,
+        /// which also carries the back slot's caught-up debt.
+        this_damage: Rect,
+    },
+}
+
+/// Classify a frame from its effective damage `class` and the back slot's
+/// `owed` region. `full` is the whole-surface rect. Pure — the buffer-age state
+/// mutation is [`apply_owed`], the pixels are [`submit_scene`].
+///
+/// `None` always skips, **even when `owed_back` is non-empty**: a slot's debt is
+/// only relevant on a frame that actually presents it, and a skipped frame
+/// presents nothing, so the debt simply waits for the next drawing frame.
+pub(crate) fn plan_frame(class: Damage, owed_back: Rect, full: Rect) -> FramePlan {
+    match class {
+        Damage::None => FramePlan::Skip,
+        Damage::Paint(r) => FramePlan::Draw {
+            relayout: false,
+            region: r.union(owed_back),
+            this_damage: r,
+        },
+        // Full ∪ owed = full; the other slot then owes a full-surface pixel
+        // catch-up (it lacks pixels, not layout).
+        Damage::Layout => FramePlan::Draw {
+            relayout: true,
+            region: full,
+            this_damage: full,
+        },
+    }
+}
+
+pub(crate) fn apply_owed(owed: &mut [Rect; 2], back: usize, this_damage: Rect) {
+    owed[back] = Rect::ZERO;
+    let other = back ^ 1;
+    owed[other] = owed[other].union(this_damage);
+}
+
+pub(crate) fn submit_scene<B: SurfaceBackend>(
+    renderer: &mut Renderer,
+    surface: &RenderableSurface<B>,
+    clear_color: Color,
+    commands: Vec<RenderCommand>,
+    scissor: Option<Rect>,
+) {
+    renderer.active_surface(surface);
+    renderer.set_scissor(scissor);
+    renderer.send_command(ClearColor(clear_color));
+
+    for cmd in commands {
+        match cmd {
+            RenderCommand::DrawQuad {
+                color,
+                border_color,
+                origin,
+                z,
+                size,
+                border_radius,
+                border_thickness,
+                background,
+                is_opaque,
+            } => {
+                renderer.send_command(DrawQuad {
+                    color,
+                    border_color,
+                    origin,
+                    z,
+                    size,
+                    border_radius,
+                    border_thickness,
+                    background,
+                    is_opaque,
+                });
+            }
+            RenderCommand::DrawText {
+                font,
+                text,
+                origin,
+                z,
+                color,
+                background,
+                is_opaque,
+            } => {
+                let texture_id = renderer.get_texture_id(font.atlas_id);
+                renderer.send_command(DrawText {
+                    font,
+                    texture_id,
+                    text,
+                    origin,
+                    z,
+                    color,
+                    background,
+                    is_opaque,
+                });
+            }
+            RenderCommand::DrawMonochromeSprite {
+                atlas_id,
+                region,
+                origin,
+                z,
+                size,
+                color,
+                background,
+                is_opaque,
+            } => {
+                let texture_id = renderer.get_texture_id(atlas_id);
+                renderer.send_command(DrawMonochromeSprite {
+                    texture_id,
+                    region: Rect::new(region.x, region.y, region.w, region.h),
+                    origin,
+                    z,
+                    size: RSize::new(size.width(), size.height()),
+                    color,
+                    background,
+                    is_opaque,
+                });
+            }
+            _ => {}
+        }
+    }
+
+    renderer.render_frame();
+    renderer.finish();
+}
 
 const DRM_FORMAT_ARGB8888: u32 = 0x3432_5241;
 
@@ -51,5 +191,6 @@ fn alloc_slot(
         surface,
         buffer,
         released: true,
+        owed: Rect::ZERO,
     }
 }
