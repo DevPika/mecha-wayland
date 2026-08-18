@@ -17,6 +17,8 @@ pub use texture::{TextureFormat, TextureId};
 use crate::commands::{Command, CommandQueueRegistry, RenderContext};
 pub mod commands;
 
+pub use utils::Rect;
+
 // ── EGL platform extension ─────────────────────────────────────────────────
 
 // EGL_MESA_platform_gbm — not in the core EGL headers, must be hardcoded.
@@ -299,9 +301,29 @@ impl Renderer {
                 .bind_framebuffer(glow::FRAMEBUFFER, Some(surface.fbo));
             self.gl
                 .viewport(0, 0, surface.width as i32, surface.height as i32);
+            self.gl.disable(glow::SCISSOR_TEST);
         }
         self.viewport_width = surface.width;
         self.viewport_height = surface.height;
+    }
+
+    pub fn set_scissor(&mut self, rect: Option<Rect>) {
+        unsafe {
+            match rect {
+                Some(r) => {
+                    let vw = self.viewport_width as f32;
+                    let vh = self.viewport_height as f32;
+                    let x0 = r.x().floor().clamp(0.0, vw);
+                    let y0 = r.y().floor().clamp(0.0, vh);
+                    let x1 = r.right().ceil().clamp(0.0, vw);
+                    let y1 = r.bottom().ceil().clamp(0.0, vh);
+                    self.gl.enable(glow::SCISSOR_TEST);
+                    self.gl
+                        .scissor(x0 as i32, y0 as i32, (x1 - x0) as i32, (y1 - y0) as i32);
+                }
+                None => self.gl.disable(glow::SCISSOR_TEST),
+            }
+        }
     }
 
     /// Upload pixel data as a GPU texture and return its `TextureId`.
