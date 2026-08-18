@@ -1,12 +1,10 @@
 use interactivity::InteractivityState;
 use interactivity::hit::{HitArea, HitAreaRegistry};
-use renderer::commands::{
-    ClearColor, Color, DrawMonochromeSprite, DrawQuad, DrawRect, DrawText, Rect, Size as RSize,
-};
+use renderer::commands::{Color, Rect};
 use renderer::{DmaBuf, Renderer};
 use std::any::Any;
 use taffy::{AvailableSpace, NodeId, Size, Style};
-use ui::{EventCtx, Point, RenderCommand, WidgetList, WidgetTree};
+use ui::{EventCtx, OnChange, Point, RenderCommand, WidgetList, WidgetTree};
 use wayland::{
     Handle, ObjectId, WlBuffer, WlCallback, WlKeyboardEvent, WlPointerEvent, WlSurface,
     WlTouchEvent, XdgSurface, XdgToplevel, ZwlrLayerSurfaceV1, ZwpLinuxDmabufV1,
@@ -54,6 +52,9 @@ pub struct Slot {
     pub surface: renderer::RenderableSurface<DmaBuf>,
     pub buffer: Handle<WlBuffer>,
     pub released: bool,
+    /// Region this slot still owes since it was last presented (buffer age).
+    /// `Rect::ZERO` = current. See ADR 0007 and `crate::render::apply_owed`.
+    pub owed: Rect,
 }
 
 pub(crate) trait AnyWindow {
@@ -70,7 +71,19 @@ pub(crate) trait AnyWindow {
     fn dimensions(&self) -> (u32, u32);
     fn request_frame(&self) -> Handle<WlCallback>;
     fn is_back_released(&self) -> bool;
-    fn render_frame(&mut self, renderer: &mut Renderer) -> Handle<WlCallback>;
+    /// This window has un-presented damage and is not yet on the frame-callback
+    /// treadmill (ADR 0007). Set by `Window::set`; the WM `pre_poll` re-arm scan
+    /// reads it to decide whether to kick a frame, and clears it on kick.
+    fn needs_render(&self) -> bool;
+    fn clear_needs_render(&mut self);
+    /// Downcast hook so `WindowManager::window_mut::<W>` can recover the concrete
+    /// `Window<W>` from the type-erased `Box<dyn AnyWindow>` (ADR 0006 entry).
+    fn as_any_mut(&mut self) -> &mut dyn Any;
+    fn render_frame(
+        &mut self,
+        renderer: &mut Renderer,
+        force_full: bool,
+    ) -> Option<Handle<WlCallback>>;
     fn on_buffer_release(&mut self, buffer_id: ObjectId);
     fn surface(&self) -> &Handle<WlSurface>;
     fn on_pointer_event(&mut self, ev: &WlPointerEvent, buffer: &mut Vec<Box<dyn Any>>);
@@ -94,7 +107,13 @@ pub struct Window<T> {
     kind: Option<WindowKindHandles>,
     tree: WidgetTree,
     root_node: Option<NodeId>,
-    pub ui: T,
+    /// The live root UI. **Private** — the load-bearing guarantee that no
+    /// live-tree mutation ever bypasses damage accumulation: the only way in is
+    /// `Window::set` (ADR 0006). Pre-spawn seeding stays legal because you build
+    /// `T` and hand it to `spawn`.
+    ui: T,
+    /// Set by `Window::set`, cleared by the WM re-arm scan on kick (ADR 0007).
+    needs_render: bool,
     pub interactivity: InteractivityState,
     pub hit_areas: HitAreaRegistry,
     input_enabled: bool,
@@ -123,6 +142,7 @@ impl<T: WidgetList> Window<T> {
             tree: WidgetTree::new(),
             root_node: None,
             ui,
+            needs_render: false,
             interactivity: InteractivityState::with_configs(touch_config, gesture_config),
             hit_areas: HitAreaRegistry::new(),
             input_enabled: true,
@@ -132,9 +152,34 @@ impl<T: WidgetList> Window<T> {
     pub fn id(&self) -> WindowId {
         self.id
     }
+
+    /// Push a new value of type `U` into the live root and flag the window for
+    /// render (ADR 0006/0007). Delegates to the root's `OnChange::change`, whose
+    /// hand-written fan-out calls the children's macro `set` — *that* is what
+    /// accumulates each touched node's `pending_damage`. (Once a damage-carrying
+    /// root `set` exists, swap `change` → `set` here; no signature change.)
+    pub fn set<U>(&mut self, v: U)
+    where
+        T: OnChange<U>,
+    {
+        self.ui.change(v);
+        self.needs_render = true;
+    }
 }
 
 impl<T: WidgetList + 'static> AnyWindow for Window<T> {
+    fn needs_render(&self) -> bool {
+        self.needs_render
+    }
+
+    fn clear_needs_render(&mut self) {
+        self.needs_render = false;
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+
     fn init(&mut self, surface: Handle<WlSurface>, kind: WindowKindHandles) {
         self.surface = Some(surface);
         self.kind = Some(kind);
@@ -197,21 +242,46 @@ impl<T: WidgetList + 'static> AnyWindow for Window<T> {
         self.slots.as_ref().map_or(false, |s| s[self.back].released)
     }
 
-    fn render_frame(&mut self, renderer: &mut Renderer) -> Handle<WlCallback> {
+    fn render_frame(
+        &mut self,
+        renderer: &mut Renderer,
+        force_full: bool,
+    ) -> Option<Handle<WlCallback>> {
         let back = self.back;
         let root_node = self.root_node.expect("configured");
         let width = self.width;
         let height = self.height;
         let clear_color = self.clear_color;
+        let full = Rect::new(0.0, 0.0, width as f32, height as f32);
 
-        ui::compute_layout(
-            &mut self.tree,
-            root_node,
-            Size {
-                width: AvailableSpace::Definite(width as f32),
-                height: AvailableSpace::Definite(height as f32),
-            },
-        );
+        // Always drain damage first, even if we end up skipping — otherwise the
+        // per-node `pending_damage` fields accumulate forever.
+        let flushed = self.ui.flush_damage(&mut self.tree);
+        let class = if force_full { ui::Damage::Layout } else { flushed };
+
+        let owed_back = self.slots.as_ref().expect("configured")[back].owed;
+        let (relayout, region, this_damage) =
+            match crate::render::plan_frame(class, owed_back, full) {
+                crate::render::FramePlan::Skip => return None,
+                crate::render::FramePlan::Draw {
+                    relayout,
+                    region,
+                    this_damage,
+                } => (relayout, region, this_damage),
+            };
+
+        // A `Paint` frame reuses the layout from the last `Layout`/full frame;
+        // only relayout when geometry may have moved.
+        if relayout {
+            ui::compute_layout(
+                &mut self.tree,
+                root_node,
+                Size {
+                    width: AvailableSpace::Definite(width as f32),
+                    height: AvailableSpace::Definite(height as f32),
+                },
+            );
+        }
 
         let commands = self.ui.render_children(&self.tree, Point::ZERO);
 
@@ -225,89 +295,45 @@ impl<T: WidgetList + 'static> AnyWindow for Window<T> {
             }
         }
 
+        // Full frames draw to the whole surface; partial frames clip to the
+        // accumulated region.
+        let scissor = (!relayout).then_some(region);
         {
             let slots = self.slots.as_ref().expect("configured");
-            renderer.active_surface(&slots[back].surface);
+            crate::render::submit_scene(
+                renderer,
+                &slots[back].surface,
+                clear_color,
+                commands,
+                scissor,
+            );
         }
 
-        renderer.send_command(ClearColor(clear_color));
-
-        for cmd in commands {
-            match cmd {
-                RenderCommand::DrawQuad {
-                    color,
-                    border_color,
-                    origin,
-                    z,
-                    size,
-                    border_radius,
-                    border_thickness,
-                } => {
-                    renderer.send_command(DrawQuad {
-                        color,
-                        border_color,
-                        origin,
-                        z,
-                        size,
-                        border_radius,
-                        border_thickness,
-                    });
-                }
-                RenderCommand::DrawText {
-                    font,
-                    text,
-                    origin,
-                    z,
-                    color,
-                } => {
-                    let texture_id = renderer.get_texture_id(font.atlas_id);
-                    renderer.send_command(DrawText {
-                        font,
-                        texture_id,
-                        text,
-                        origin,
-                        z,
-                        color,
-                    });
-                }
-                RenderCommand::DrawMonochromeSprite {
-                    atlas_id,
-                    region,
-                    origin,
-                    z,
-                    size,
-                    color,
-                } => {
-                    let texture_id = renderer.get_texture_id(atlas_id);
-                    renderer.send_command(DrawMonochromeSprite {
-                        texture_id,
-                        region: Rect::new(region.x, region.y, region.w, region.h),
-                        origin,
-                        z,
-                        size: RSize::new(size.width(), size.height()),
-                        color,
-                    });
-                }
-                _ => {}
-            }
+        // Buffer-age bookkeeping: back is now current, the other slot owes this
+        // frame's damage.
+        {
+            let slots = self.slots.as_ref().expect("configured");
+            let mut owed = [slots[0].owed, slots[1].owed];
+            crate::render::apply_owed(&mut owed, back, this_damage);
+            let slots = self.slots.as_mut().expect("configured");
+            slots[0].owed = owed[0];
+            slots[1].owed = owed[1];
         }
-
-        renderer.process_command_queue::<ClearColor>();
-        renderer.process_command_queue::<DrawRect>();
-        renderer.process_command_queue::<DrawQuad>();
-        renderer.process_command_queue::<DrawMonochromeSprite>();
-        renderer.process_command_queue::<DrawText>();
-        renderer.finish();
 
         let surface = self.surface.as_ref().expect("configured");
         let slots = self.slots.as_mut().expect("configured");
         let next_frame = surface.frame();
         surface.attach(Some(&slots[back].buffer), 0, 0);
-        surface.damage(0, 0, width as i32, height as i32);
+        surface.damage(
+            region.x() as i32,
+            region.y() as i32,
+            region.width() as i32,
+            region.height() as i32,
+        );
         surface.commit();
         slots[back].released = false;
         self.back ^= 1;
-        next_frame
+        Some(next_frame)
     }
 
     fn on_buffer_release(&mut self, buffer_id: ObjectId) {

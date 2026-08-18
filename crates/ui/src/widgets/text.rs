@@ -1,8 +1,8 @@
 use assets::BakedFont;
 use taffy::{AvailableSpace, Layout, Size, Style};
-use utils::{Color, Point};
+use utils::{Color, Point, Rect};
 
-use crate::{Measure, Render, RenderCommand, WidgetTree};
+use crate::{Damage, Measure, OnChange, Render, RenderCommand};
 
 #[crate::widget(measure)]
 #[derive(Clone)]
@@ -18,6 +18,8 @@ impl Text {
         Self {
             node_id: taffy::NodeId::new(u64::MAX),
             style,
+            bounds: Rect::ZERO,
+            pending_damage: Damage::None,
             font: None,
             text: String::new(),
             color: Color::WHITE,
@@ -28,19 +30,23 @@ impl Text {
     pub fn placeholder() -> Self {
         Self::new(Style::default())
     }
+}
 
-    pub fn set_text(&mut self, tree: &mut WidgetTree, text: String) {
-        self.text = text;
-        tree.set_node_context(self.node_id, Some(Box::new(self.clone())))
-            .unwrap();
-        tree.mark_dirty(self.node_id).unwrap();
+impl OnChange<String> for Text {
+    fn damage(&self, _new: &String) -> Damage {
+        Damage::Layout
     }
+    fn change(&mut self, new: String) {
+        self.text = new;
+    }
+}
 
-    pub fn set_font(&mut self, tree: &mut WidgetTree, font: Option<&'static BakedFont>) {
-        self.font = font;
-        tree.set_node_context(self.node_id, Some(Box::new(self.clone())))
-            .unwrap();
-        tree.mark_dirty(self.node_id).unwrap();
+impl OnChange<Option<&'static BakedFont>> for Text {
+    fn damage(&self, _new: &Option<&'static BakedFont>) -> Damage {
+        Damage::Layout
+    }
+    fn change(&mut self, new: Option<&'static BakedFont>) {
+        self.font = new;
     }
 }
 
@@ -63,7 +69,6 @@ impl Measure for Text {
 impl Render for Text {
     fn render(&self, _layout: &Layout, abs_pos: Point) -> Vec<RenderCommand> {
         let Some(font) = self.font else { return vec![] };
-        // DrawText expects baseline-left origin; abs_pos is the text node top-left.
         let origin = Point::new(abs_pos.x(), abs_pos.y() + font.ascent);
         vec![RenderCommand::DrawText {
             font,

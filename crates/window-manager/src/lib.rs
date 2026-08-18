@@ -9,7 +9,8 @@ use renderer::Renderer;
 use renderer::commands::{ClearColor, DrawMonochromeSprite, DrawQuad, DrawRect, DrawText};
 use std::any::Any;
 use std::collections::HashMap;
-use ui::WidgetList;
+use std::marker::PhantomData;
+use ui::{OnChange, WidgetList};
 use wayland::{Interface, *};
 
 #[derive(Debug)]
@@ -25,6 +26,31 @@ pub use window::{
     WindowId, WindowKind, WindowSettings, ZwlrLayerShellV1Layer, ZwlrLayerSurfaceV1Anchor,
     ZwlrLayerSurfaceV1KeyboardInteractivity,
 };
+
+pub struct WindowHandle<T> {
+    id: WindowId,
+    _ui: PhantomData<fn() -> T>,
+}
+
+impl<T> Clone for WindowHandle<T> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+impl<T> Copy for WindowHandle<T> {}
+
+impl<T: WidgetList + 'static> WindowHandle<T> {
+    pub fn id(self) -> WindowId {
+        self.id
+    }
+
+    pub fn set<U>(self, value: U, wm: &mut WindowManager) -> Option<()>
+    where
+        T: OnChange<U>,
+    {
+        wm.window_mut::<T>(self.id).map(|w| w.set(value))
+    }
+}
 
 #[derive(State)]
 pub struct WindowManager {
@@ -87,10 +113,40 @@ impl WindowManager {
     }
 
     pub fn pre_poll(&mut self) {
+        self.rearm_frames();
         self.wayland.proxy().flush();
     }
 
     pub fn poll(&mut self) {}
+
+    fn window_mut<W: WidgetList + 'static>(&mut self, id: WindowId) -> Option<&mut Window<W>> {
+        self.windows
+            .get_mut(&id)?
+            .as_any_mut()
+            .downcast_mut::<Window<W>>()
+    }
+
+    fn frame_in_flight(&self, id: WindowId) -> bool {
+        self.frame_callbacks.values().any(|&w| w == id)
+    }
+
+    fn rearm_frames(&mut self) {
+        let to_kick: Vec<WindowId> = self
+            .windows
+            .iter()
+            .filter(|(id, w)| {
+                w.needs_render() && w.is_back_released() && !self.frame_in_flight(**id)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+
+        for id in to_kick {
+            if let Some(w) = self.windows.get_mut(&id) {
+                w.clear_needs_render();
+            }
+            self.do_render_frame(id, false);
+        }
+    }
 
     pub fn upload_atlas(&mut self, atlas: &assets::AtlasData) {
         self.renderer
@@ -102,7 +158,7 @@ impl WindowManager {
         &mut self,
         settings: WindowSettings,
         ui: T,
-    ) -> WindowId {
+    ) -> WindowHandle<T> {
         let touch_config = settings.touch_config.or_else(|| ui.touch_config());
         let gesture_config = settings.gesture_config.or_else(|| ui.gesture_config());
 
@@ -119,7 +175,10 @@ impl WindowManager {
             gesture_config,
         ));
         self.pending.push((settings, window));
-        id
+        WindowHandle {
+            id,
+            _ui: PhantomData,
+        }
     }
 
     pub fn request_frame(&mut self, id: WindowId) {
@@ -224,9 +283,9 @@ impl WindowManager {
         }
     }
 
-    fn do_render_frame(&mut self, window_id: WindowId) {
+    fn do_render_frame(&mut self, window_id: WindowId, force_full: bool) {
         if let Some(window) = self.windows.get_mut(&window_id) {
-            let cb = window.render_frame(&mut self.renderer);
+            let cb = window.render_frame(&mut self.renderer, force_full);
 
             let wants = window.wants_input();
             if wants != window.input_enabled() {
@@ -241,8 +300,12 @@ impl WindowManager {
                 }
             }
 
-            let cb_id = cb.object_id().expect("live callback");
-            self.frame_callbacks.insert(cb_id, window_id);
+            // A skipped frame (no damage) commits nothing and requests no
+            // callback; Track C's scheduler re-arms it when new damage lands.
+            if let Some(cb) = cb {
+                let cb_id = cb.object_id().expect("live callback");
+                self.frame_callbacks.insert(cb_id, window_id);
+            }
         }
     }
 }
@@ -326,7 +389,11 @@ pub fn module<S>() -> impl app::RegisteredModule<WindowManager, S> {
                         }
                     }
                 }
-                if !wm.event_buffer.is_empty() { Some(UiEventsReady) } else { None }
+                if !wm.event_buffer.is_empty() {
+                    Some(UiEventsReady)
+                } else {
+                    None
+                }
             },
         )
         .on(
@@ -356,7 +423,11 @@ pub fn module<S>() -> impl app::RegisteredModule<WindowManager, S> {
                         }
                     }
                 }
-                if !wm.event_buffer.is_empty() { Some(UiEventsReady) } else { None }
+                if !wm.event_buffer.is_empty() {
+                    Some(UiEventsReady)
+                } else {
+                    None
+                }
             },
         )
         .on(
@@ -397,7 +468,8 @@ pub fn module<S>() -> impl app::RegisteredModule<WindowManager, S> {
                         }
                     }
                     WlTouchEvent::Cancel { .. } => {
-                        let window_ids: Vec<WindowId> = wm.touch_window_map.values().copied().collect();
+                        let window_ids: Vec<WindowId> =
+                            wm.touch_window_map.values().copied().collect();
                         wm.touch_window_map.clear();
                         let mut seen = std::collections::HashSet::new();
                         for window_id in window_ids {
@@ -410,12 +482,18 @@ pub fn module<S>() -> impl app::RegisteredModule<WindowManager, S> {
                     }
                     _ => {}
                 }
-                if !wm.event_buffer.is_empty() { Some(UiEventsReady) } else { None }
+                if !wm.event_buffer.is_empty() {
+                    Some(UiEventsReady)
+                } else {
+                    None
+                }
             },
         )
         .on(|wm: &mut WindowManager, event: &wayland::WlCallbackEvent| {
             let wayland::WlCallbackEvent::Done { sender, .. } = event;
-            let Some(obj_id) = sender.object_id() else { return; };
+            let Some(obj_id) = sender.object_id() else {
+                return;
+            };
 
             if let Some(window_id) = wm.frame_callbacks.remove(&obj_id) {
                 if wm
@@ -423,7 +501,8 @@ pub fn module<S>() -> impl app::RegisteredModule<WindowManager, S> {
                     .get(&window_id)
                     .map_or(false, |w| w.is_back_released())
                 {
-                    wm.do_render_frame(window_id);
+                    // Steady-state repaint: damage-driven, never forced full.
+                    wm.do_render_frame(window_id, false);
                 }
             } else {
                 wm.flush_pending();
@@ -445,15 +524,22 @@ pub fn module<S>() -> impl app::RegisteredModule<WindowManager, S> {
                     height,
                 } = event
                 {
-                    let Some(sender_id) = sender.object_id() else { return; };
-                    let Some(&id) = wm.surfaces_with_roles.get(&sender_id) else { return; };
-                    let Some(window) = wm.windows.get(&id) else { return; };
+                    let Some(sender_id) = sender.object_id() else {
+                        return;
+                    };
+                    let Some(&id) = wm.surfaces_with_roles.get(&sender_id) else {
+                        return;
+                    };
+                    let Some(window) = wm.windows.get(&id) else {
+                        return;
+                    };
                     let (stored_w, stored_h) = window.dimensions();
                     let w = if *width == 0 { stored_w } else { *width };
                     let h = if *height == 0 { stored_h } else { *height };
                     sender.ack_configure(*serial);
                     wm.configure_window(id, w, h);
-                    wm.do_render_frame(id);
+                    // First frame after configure: bounds are ZERO, so force full.
+                    wm.do_render_frame(id, true);
                 }
             },
         )
@@ -462,13 +548,20 @@ pub fn module<S>() -> impl app::RegisteredModule<WindowManager, S> {
 
             // The sender's object ID may be gone if we destroyed the window and Sway
             // delivers a configure event during teardown. Skip it gracefully.
-            let Some(obj_id) = sender.object_id() else { return; };
-            let Some(&id) = wm.surfaces_with_roles.get(&obj_id) else { return; };
-            let Some(window) = wm.windows.get(&id) else { return; };
+            let Some(obj_id) = sender.object_id() else {
+                return;
+            };
+            let Some(&id) = wm.surfaces_with_roles.get(&obj_id) else {
+                return;
+            };
+            let Some(window) = wm.windows.get(&id) else {
+                return;
+            };
             let (w, h) = window.dimensions();
             sender.ack_configure(*serial);
             wm.configure_window(id, w, h);
-            wm.do_render_frame(id);
+            // First frame after configure: bounds are ZERO, so force full.
+            wm.do_render_frame(id, true);
         })
         .on(|_: &mut WindowManager, event: &wayland::XdgWmBaseEvent| {
             let wayland::XdgWmBaseEvent::Ping { sender, serial } = event;

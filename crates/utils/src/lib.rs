@@ -325,4 +325,33 @@ impl Rect {
     pub fn contains_point(self, p: Point) -> bool {
         self.contains(p.x(), p.y())
     }
+
+    /// Returns `true` if the rectangle covers no pixels (zero width or height).
+    ///
+    /// Such a rectangle is the identity of [`Rect::union`]: unioning it with
+    /// any other rect yields the other rect unchanged.
+    #[inline]
+    pub fn is_empty(self) -> bool {
+        self.width() == 0.0 || self.height() == 0.0
+    }
+
+    /// Returns the smallest rectangle containing both `self` and `other`.
+    ///
+    /// An empty rectangle (see [`Rect::is_empty`]) acts as the identity, so a
+    /// stray zero-area rect never smears the bound toward the origin. Two
+    /// non-empty rects union to the min-origin / max-far-corner bounding box.
+    #[inline]
+    pub fn union(self, other: Rect) -> Rect {
+        if self.is_empty() {
+            return other;
+        }
+        if other.is_empty() {
+            return self;
+        }
+        let x = self.x().min(other.x());
+        let y = self.y().min(other.y());
+        let right = self.right().max(other.right());
+        let bottom = self.bottom().max(other.bottom());
+        Rect::new(x, y, right - x, bottom - y)
+    }
 }
