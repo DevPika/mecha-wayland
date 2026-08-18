@@ -1,7 +1,7 @@
 use std::os::fd::AsFd;
 
 use renderer::commands::{
-    ClearColor, Color, DrawMonochromeSprite, DrawQuad, DrawRect, DrawText, Size as RSize,
+    ClearColor, Color, DrawMonochromeSprite, DrawQuad, DrawText, Size as RSize,
 };
 use renderer::{DmaBuf, Rect, RenderableSurface, Renderer, SurfaceBackend};
 use ui::{Damage, RenderCommand};
@@ -105,6 +105,9 @@ pub(crate) fn submit_scene<B: SurfaceBackend>(
                     origin,
                     z,
                     color,
+                    // Opaque-text variant is opt-in from the UI; until that
+                    // traversal lands, text stays on the translucent path.
+                    background: Color::TRANSPARENT,
                 });
             }
             RenderCommand::DrawMonochromeSprite {
@@ -123,17 +126,14 @@ pub(crate) fn submit_scene<B: SurfaceBackend>(
                     z,
                     size: RSize::new(size.width(), size.height()),
                     color,
+                    background: Color::TRANSPARENT,
                 });
             }
             _ => {}
         }
     }
 
-    renderer.process_command_queue::<ClearColor>();
-    renderer.process_command_queue::<DrawRect>();
-    renderer.process_command_queue::<DrawQuad>();
-    renderer.process_command_queue::<DrawMonochromeSprite>();
-    renderer.process_command_queue::<DrawText>();
+    renderer.render_frame();
     renderer.finish();
 }
 

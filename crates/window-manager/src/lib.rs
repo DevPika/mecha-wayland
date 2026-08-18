@@ -6,7 +6,6 @@ mod window;
 use app::{RegisteredModule, prelude::State};
 use io_ring::RingProxy;
 use renderer::Renderer;
-use renderer::commands::{ClearColor, DrawMonochromeSprite, DrawQuad, DrawRect, DrawText};
 use std::any::Any;
 use std::collections::HashMap;
 use std::marker::PhantomData;
@@ -101,11 +100,7 @@ impl WindowManager {
     }
 
     pub fn start(&mut self) {
-        self.renderer.init_command_queue::<ClearColor>();
-        self.renderer.init_command_queue::<DrawRect>();
-        self.renderer.init_command_queue::<DrawQuad>();
-        self.renderer.init_command_queue::<DrawMonochromeSprite>();
-        self.renderer.init_command_queue::<DrawText>();
+        self.renderer.init_pipelines();
 
         let display = self.wayland.display();
         display.get_registry();

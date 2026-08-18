@@ -426,28 +426,64 @@ impl Renderer {
         *self.atlas_map.get(&atlas_id).expect("atlas not uploaded")
     }
 
-    pub fn init_command_queue<C: Command>(&mut self) {
+    /// Compile the opaque (Shader A) and translucent (Shader B) programs. Call
+    /// once, after a surface is active so a GL context exists.
+    pub fn init_pipelines(&mut self) {
         let ctx = RenderContext {
             gl: &self.gl,
             viewport_width: self.viewport_width,
             viewport_height: self.viewport_height,
             textures: &self.textures,
         };
-        self.command_queue_registry.init_queue::<C>(&ctx);
+        self.command_queue_registry.init(&ctx);
     }
 
+    /// Queue a draw. Commands fan into the opaque/translucent pass queues; no
+    /// pixels are touched until the matching `process_*` call.
     pub fn send_command<C: Command>(&mut self, command: C) {
-        self.command_queue_registry.enqueue(command);
+        self.command_queue_registry.record(command);
     }
 
-    pub fn process_command_queue<C: Command>(&mut self) {
+    /// Apply the pending clear (colour + depth).
+    pub fn process_clear(&mut self) {
         let ctx = RenderContext {
             gl: &self.gl,
             viewport_width: self.viewport_width,
             viewport_height: self.viewport_height,
             textures: &self.textures,
         };
-        self.command_queue_registry.process::<C>(&ctx);
+        self.command_queue_registry.process_clear(&ctx);
+    }
+
+    /// Opaque pass: solid rects + opaque sprites, depth-write on, front-to-back.
+    pub fn process_opaque(&mut self) {
+        let ctx = RenderContext {
+            gl: &self.gl,
+            viewport_width: self.viewport_width,
+            viewport_height: self.viewport_height,
+            textures: &self.textures,
+        };
+        self.command_queue_registry.process_opaque(&ctx);
+    }
+
+    /// Translucent pass: quads + translucent sprites, globally z-sorted,
+    /// blended, depth-tested (early-z) against the opaque pass.
+    pub fn process_translucent(&mut self) {
+        let ctx = RenderContext {
+            gl: &self.gl,
+            viewport_width: self.viewport_width,
+            viewport_height: self.viewport_height,
+            textures: &self.textures,
+        };
+        self.command_queue_registry.process_translucent(&ctx);
+    }
+
+    /// Convenience: clear, then the opaque pass, then the translucent pass — the
+    /// whole frame in submission-agnostic paint order.
+    pub fn render_frame(&mut self) {
+        self.process_clear();
+        self.process_opaque();
+        self.process_translucent();
     }
 
     /// Block until all pending GPU commands have completed. Call this after

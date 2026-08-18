@@ -52,8 +52,6 @@ pub struct Slot {
     pub surface: renderer::RenderableSurface<DmaBuf>,
     pub buffer: Handle<WlBuffer>,
     pub released: bool,
-    /// Region this slot still owes since it was last presented (buffer age).
-    /// `Rect::ZERO` = current. See ADR 0007 and `crate::render::apply_owed`.
     pub owed: Rect,
 }
 
@@ -71,13 +69,8 @@ pub(crate) trait AnyWindow {
     fn dimensions(&self) -> (u32, u32);
     fn request_frame(&self) -> Handle<WlCallback>;
     fn is_back_released(&self) -> bool;
-    /// This window has un-presented damage and is not yet on the frame-callback
-    /// treadmill (ADR 0007). Set by `Window::set`; the WM `pre_poll` re-arm scan
-    /// reads it to decide whether to kick a frame, and clears it on kick.
     fn needs_render(&self) -> bool;
     fn clear_needs_render(&mut self);
-    /// Downcast hook so `WindowManager::window_mut::<W>` can recover the concrete
-    /// `Window<W>` from the type-erased `Box<dyn AnyWindow>` (ADR 0006 entry).
     fn as_any_mut(&mut self) -> &mut dyn Any;
     fn render_frame(
         &mut self,
@@ -107,12 +100,7 @@ pub struct Window<T> {
     kind: Option<WindowKindHandles>,
     tree: WidgetTree,
     root_node: Option<NodeId>,
-    /// The live root UI. **Private** — the load-bearing guarantee that no
-    /// live-tree mutation ever bypasses damage accumulation: the only way in is
-    /// `Window::set` (ADR 0006). Pre-spawn seeding stays legal because you build
-    /// `T` and hand it to `spawn`.
     ui: T,
-    /// Set by `Window::set`, cleared by the WM re-arm scan on kick (ADR 0007).
     needs_render: bool,
     pub interactivity: InteractivityState,
     pub hit_areas: HitAreaRegistry,
@@ -153,11 +141,6 @@ impl<T: WidgetList> Window<T> {
         self.id
     }
 
-    /// Push a new value of type `U` into the live root and flag the window for
-    /// render (ADR 0006/0007). Delegates to the root's `OnChange::change`, whose
-    /// hand-written fan-out calls the children's macro `set` — *that* is what
-    /// accumulates each touched node's `pending_damage`. (Once a damage-carrying
-    /// root `set` exists, swap `change` → `set` here; no signature change.)
     pub fn set<U>(&mut self, v: U)
     where
         T: OnChange<U>,
@@ -257,7 +240,11 @@ impl<T: WidgetList + 'static> AnyWindow for Window<T> {
         // Always drain damage first, even if we end up skipping — otherwise the
         // per-node `pending_damage` fields accumulate forever.
         let flushed = self.ui.flush_damage(&mut self.tree);
-        let class = if force_full { ui::Damage::Layout } else { flushed };
+        let class = if force_full {
+            ui::Damage::Layout
+        } else {
+            flushed
+        };
 
         let owed_back = self.slots.as_ref().expect("configured")[back].owed;
         let (relayout, region, this_damage) =
