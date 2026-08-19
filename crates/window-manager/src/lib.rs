@@ -1,7 +1,10 @@
 mod globals;
+mod layer_shell;
 pub mod prelude;
 mod render;
+mod surface;
 mod window;
+mod xdg_shell;
 
 use app::{RegisteredModule, prelude::State};
 use io_ring::RingProxy;
@@ -17,7 +20,10 @@ pub struct UiEventsReady;
 impl app::Event for UiEventsReady {}
 
 use globals::WaylandGlobals;
-use window::{AnyWindow, Window, WindowKindHandles};
+use surface::{LayerShellSurface, XdgShellSurface};
+use window::{AnyWindow, Window};
+
+pub use surface::Surface;
 
 pub use renderer::commands::Color;
 pub use ui::WidgetList as WindowUi;
@@ -176,6 +182,67 @@ impl WindowManager {
         }
     }
 
+    pub fn create_surface(&mut self) -> Handle<WlSurface> {
+        let compositor = self
+            .globals
+            .compositor
+            .clone()
+            .unwrap_or_else(|| panic!("compositor global missing"));
+        compositor.create_surface()
+    }
+
+    pub fn spawn_window_with<T: WidgetList + 'static>(
+        &mut self,
+        width: u32,
+        height: u32,
+        clear_color: Color,
+        ui: T,
+        surface: Handle<WlSurface>,
+        role: Box<dyn Surface>,
+    ) -> WindowHandle<T> {
+        let touch_config = ui.touch_config();
+        let gesture_config = ui.gesture_config();
+
+        let id = WindowId(self.next_window_id);
+        self.next_window_id += 1;
+
+        let mut window = Box::new(Window::new(
+            id,
+            width,
+            height,
+            clear_color,
+            ui,
+            touch_config,
+            gesture_config,
+        ));
+        window.init(surface, role);
+        let surface_id = window.surface().object_id().expect("surface initialized");
+        self.wl_surfaces.insert(surface_id, id);
+        self.windows.insert(id, window);
+        WindowHandle {
+            id,
+            _ui: PhantomData,
+        }
+    }
+
+    /// Seam drive point: downcast a window's [`Surface`] role to its concrete
+    /// app type, mirroring the UI-side [`window_mut`](Self::window_mut). Lets an
+    /// app handler mutate role state it does not own (e.g. flipping the
+    /// session-lock `locked` flag on the `Locked` event).
+    pub fn surface_mut<S: Surface + 'static>(&mut self, id: WindowId) -> Option<&mut S> {
+        self.windows
+            .get_mut(&id)?
+            .role_any_mut()?
+            .downcast_mut::<S>()
+    }
+
+    /// The window the pointer is currently over (from the last `Enter`/`Leave`),
+    /// so app code can tell which surface a click landed on without tracking
+    /// focus itself.
+    pub fn current_pointer_window(&self) -> Option<WindowId> {
+        self.current_pointer_window
+    }
+
     pub fn request_frame(&mut self, id: WindowId) {
         let window = self.windows.get(&id).expect("window exists");
         if !window.is_configured() {
@@ -190,6 +257,23 @@ impl WindowManager {
         if let Some(mut window) = self.windows.remove(&id) {
             window.destroy();
         }
+    }
+
+    pub fn window_for_role(&self, object_id: ObjectId) -> Option<WindowId> {
+        self.surfaces_with_roles.get(&object_id).copied()
+    }
+
+    pub fn window_dimensions(&self, id: WindowId) -> Option<(u32, u32)> {
+        self.windows.get(&id).map(|w| w.dimensions())
+    }
+
+    pub fn configure(&mut self, id: WindowId, serial: u32, w: u32, h: u32) {
+        if let Some(window) = self.windows.get(&id) {
+            window.ack_configure(serial);
+        }
+        self.configure_window(id, w, h);
+        // First frame after configure: bounds are ZERO, so force full.
+        self.do_render_frame(id, true);
     }
 
     fn flush_pending(&mut self) {
@@ -232,7 +316,7 @@ impl WindowManager {
                         window.id(),
                     );
                     surface.commit();
-                    window.init(surface, WindowKindHandles::LayerShell { layer_surface });
+                    window.init(surface, Box::new(LayerShellSurface { layer_surface }));
                     let surface_id = window.surface().object_id().expect("surface initialized");
                     self.wl_surfaces.insert(surface_id, window.id());
                     self.windows.insert(window.id(), window);
@@ -258,10 +342,10 @@ impl WindowManager {
                         .insert(xdg_surface.object_id().expect("just created"), window.id());
                     window.init(
                         surface,
-                        WindowKindHandles::Xdg {
+                        Box::new(XdgShellSurface {
                             xdg_surface,
                             toplevel,
-                        },
+                        }),
                     );
                     let surface_id = window.surface().object_id().expect("surface initialized");
                     self.wl_surfaces.insert(surface_id, window.id());
@@ -295,8 +379,6 @@ impl WindowManager {
                 }
             }
 
-            // A skipped frame (no damage) commits nothing and requests no
-            // callback; Track C's scheduler re-arms it when new damage lands.
             if let Some(cb) = cb {
                 let cb_id = cb.object_id().expect("live callback");
                 self.frame_callbacks.insert(cb_id, window_id);
@@ -308,6 +390,8 @@ impl WindowManager {
 pub fn module<S>() -> impl app::RegisteredModule<WindowManager, S> {
     app::Module::new()
         .mount(wayland::module::<S>().into_module())
+        .mount(layer_shell::module::<S>().into_module())
+        .mount(xdg_shell::module::<S>().into_module())
         .on(|wm: &mut WindowManager, _: &app::Start| wm.start())
         .on(|wm: &mut WindowManager, _: &app::PrePoll| wm.pre_poll())
         .on(|wm: &mut WindowManager, _: &app::Poll| wm.poll())
@@ -509,54 +593,6 @@ pub fn module<S>() -> impl app::RegisteredModule<WindowManager, S> {
             for window in wm.windows.values_mut() {
                 window.on_buffer_release(obj_id);
             }
-        })
-        .on(
-            |wm: &mut WindowManager, event: &wayland::ZwlrLayerSurfaceV1Event| {
-                if let wayland::ZwlrLayerSurfaceV1Event::Configure {
-                    sender,
-                    serial,
-                    width,
-                    height,
-                } = event
-                {
-                    let Some(sender_id) = sender.object_id() else {
-                        return;
-                    };
-                    let Some(&id) = wm.surfaces_with_roles.get(&sender_id) else {
-                        return;
-                    };
-                    let Some(window) = wm.windows.get(&id) else {
-                        return;
-                    };
-                    let (stored_w, stored_h) = window.dimensions();
-                    let w = if *width == 0 { stored_w } else { *width };
-                    let h = if *height == 0 { stored_h } else { *height };
-                    sender.ack_configure(*serial);
-                    wm.configure_window(id, w, h);
-                    // First frame after configure: bounds are ZERO, so force full.
-                    wm.do_render_frame(id, true);
-                }
-            },
-        )
-        .on(|wm: &mut WindowManager, event: &wayland::XdgSurfaceEvent| {
-            let wayland::XdgSurfaceEvent::Configure { sender, serial } = event;
-
-            // The sender's object ID may be gone if we destroyed the window and Sway
-            // delivers a configure event during teardown. Skip it gracefully.
-            let Some(obj_id) = sender.object_id() else {
-                return;
-            };
-            let Some(&id) = wm.surfaces_with_roles.get(&obj_id) else {
-                return;
-            };
-            let Some(window) = wm.windows.get(&id) else {
-                return;
-            };
-            let (w, h) = window.dimensions();
-            sender.ack_configure(*serial);
-            wm.configure_window(id, w, h);
-            // First frame after configure: bounds are ZERO, so force full.
-            wm.do_render_frame(id, true);
         })
         .on(|_: &mut WindowManager, event: &wayland::XdgWmBaseEvent| {
             let wayland::XdgWmBaseEvent::Ping { sender, serial } = event;
