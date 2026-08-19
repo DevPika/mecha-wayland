@@ -7,7 +7,7 @@ use taffy::{AvailableSpace, NodeId, Size, Style};
 use ui::{EventCtx, OnChange, Point, RenderCommand, WidgetList, WidgetTree};
 use wayland::{
     Handle, ObjectId, WlBuffer, WlCallback, WlKeyboardEvent, WlPointerEvent, WlSurface,
-    WlTouchEvent, XdgSurface, XdgToplevel, ZwlrLayerSurfaceV1, ZwpLinuxDmabufV1,
+    WlTouchEvent, ZwpLinuxDmabufV1,
 };
 pub use wayland::{
     ZwlrLayerShellV1Layer, ZwlrLayerSurfaceV1Anchor, ZwlrLayerSurfaceV1KeyboardInteractivity,
@@ -38,15 +38,7 @@ pub enum WindowKind {
     },
 }
 
-pub(crate) enum WindowKindHandles {
-    LayerShell {
-        layer_surface: Handle<ZwlrLayerSurfaceV1>,
-    },
-    Xdg {
-        xdg_surface: Handle<XdgSurface>,
-        toplevel: Handle<XdgToplevel>,
-    },
-}
+pub use crate::surface::Surface;
 
 pub struct Slot {
     pub surface: renderer::RenderableSurface<DmaBuf>,
@@ -56,7 +48,7 @@ pub struct Slot {
 }
 
 pub(crate) trait AnyWindow {
-    fn init(&mut self, surface: Handle<WlSurface>, kind: WindowKindHandles);
+    fn init(&mut self, surface: Handle<WlSurface>, role: Box<dyn Surface>);
     fn configure(
         &mut self,
         renderer: &mut Renderer,
@@ -79,6 +71,8 @@ pub(crate) trait AnyWindow {
     ) -> Option<Handle<WlCallback>>;
     fn on_buffer_release(&mut self, buffer_id: ObjectId);
     fn surface(&self) -> &Handle<WlSurface>;
+    fn ack_configure(&self, serial: u32);
+    fn role_any_mut(&mut self) -> Option<&mut dyn Any>;
     fn on_pointer_event(&mut self, ev: &WlPointerEvent, buffer: &mut Vec<Box<dyn Any>>);
     fn on_keyboard_event(&mut self, ev: &WlKeyboardEvent, buffer: &mut Vec<Box<dyn Any>>);
     fn on_touch_event(&mut self, ev: &WlTouchEvent, buffer: &mut Vec<Box<dyn Any>>);
@@ -97,7 +91,7 @@ pub struct Window<T> {
     width: u32,
     height: u32,
     clear_color: Color,
-    kind: Option<WindowKindHandles>,
+    role: Option<Box<dyn Surface>>,
     tree: WidgetTree,
     root_node: Option<NodeId>,
     ui: T,
@@ -126,7 +120,7 @@ impl<T: WidgetList> Window<T> {
             width,
             height,
             clear_color,
-            kind: None,
+            role: None,
             tree: WidgetTree::new(),
             root_node: None,
             ui,
@@ -163,9 +157,9 @@ impl<T: WidgetList + 'static> AnyWindow for Window<T> {
         self
     }
 
-    fn init(&mut self, surface: Handle<WlSurface>, kind: WindowKindHandles) {
+    fn init(&mut self, surface: Handle<WlSurface>, role: Box<dyn Surface>) {
         self.surface = Some(surface);
-        self.kind = Some(kind);
+        self.role = Some(role);
     }
 
     fn id(&self) -> WindowId {
@@ -342,6 +336,16 @@ impl<T: WidgetList + 'static> AnyWindow for Window<T> {
         self.surface.as_ref().expect("surface initialized")
     }
 
+    fn ack_configure(&self, serial: u32) {
+        if let Some(role) = self.role.as_ref() {
+            role.ack_configure(serial);
+        }
+    }
+
+    fn role_any_mut(&mut self) -> Option<&mut dyn Any> {
+        self.role.as_mut().map(|role| role.as_any_mut())
+    }
+
     fn on_pointer_event(&mut self, ev: &WlPointerEvent, buffer: &mut Vec<Box<dyn Any>>) {
         self.interactivity.call_before_frame();
         self.interactivity.process_pointer(ev);
@@ -376,17 +380,8 @@ impl<T: WidgetList + 'static> AnyWindow for Window<T> {
     }
 
     fn destroy(&mut self) {
-        if let Some(kind) = &self.kind {
-            match kind {
-                WindowKindHandles::LayerShell { layer_surface } => layer_surface.destroy(),
-                WindowKindHandles::Xdg {
-                    xdg_surface,
-                    toplevel,
-                } => {
-                    toplevel.destroy();
-                    xdg_surface.destroy();
-                }
-            }
+        if let Some(role) = self.role.as_mut() {
+            role.destroy();
         }
         if let Some(surface) = &self.surface {
             surface.destroy();
