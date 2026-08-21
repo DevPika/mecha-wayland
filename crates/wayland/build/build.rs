@@ -10,5 +10,8 @@ fn main() {
         "protocols/wlr-layer-shell-unstable-v1.xml",
         "protocols/ext-session-lock-v1.xml",
         "protocols/linux-dmabuf-unstable-v1.xml",
+        "protocols/virtual-keyboard-unstable-v1.xml",
+        "protocols/xx-input-method-v2.xml",
+        "protocols/xx-text-input-v3.xml",
     ]);
 }
