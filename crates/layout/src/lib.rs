@@ -86,7 +86,7 @@ use tree::{LayoutTree, taffy_id};
 
 pub mod prelude {
     pub use crate::{
-        Align, Available, Constraints, Direction, Display, Justify, Layout, LayoutDone,
+        Align, Available, Constraints, Direction, Display, Justify, ComputedLayout, LayoutDone,
         LayoutModule, LayoutRoot, LayoutStyle, Measure, Position, StyleContext, Val, Wrap, auto,
         percent, px,
     };
@@ -236,15 +236,15 @@ impl Component for LayoutRoot {}
 /// by. Written by the pass only, and only when it changed, so
 /// `OnChanged<Layout>` names exactly the nodes whose box moved.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Layout {
+pub struct ComputedLayout {
     pub rect: Rect,
     pub padding: Insets<f32>,
     pub border: Insets<f32>,
 }
 
-impl Component for Layout {}
+impl Component for ComputedLayout {}
 
-impl Layout {
+impl ComputedLayout {
     /// The rect inside padding and border, each dimension clamped at zero.
     pub fn content(&self) -> Rect {
         self.rect.inset(Insets::new(
@@ -328,7 +328,7 @@ impl Module for LayoutModule {
             .register_component::<LayoutStyle>()
             .register_component::<Measure>()
             .register_component::<LayoutRoot>()
-            .register_component::<Layout>()
+            .register_component::<ComputedLayout>()
             .register_component::<Scratch>()
             .init_resource::<DirtyRoots>()
             .system(on_spawned)
@@ -356,7 +356,7 @@ fn pass(app: &mut App, _: &PostTick) {
 fn layout_root(app: &mut App, root: NodeId) {
     let (tree, mut data) = app.split();
     let (styles, measures, layouts, scratch) =
-        data.query::<(&LayoutStyle, &Measure, &mut Layout, &mut Scratch)>();
+        data.query::<(&LayoutStyle, &Measure, &mut ComputedLayout, &mut Scratch)>();
     let mut view = LayoutTree::new(tree, root, styles, measures, layouts, scratch);
     let id = taffy_id(root);
     compute_root_layout(&mut view, id, TSize::MAX_CONTENT);

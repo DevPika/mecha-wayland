@@ -34,7 +34,7 @@ thread_local! {
 fn log_done(_: &mut App, d: &LayoutDone) {
     DONE.with(|l| l.borrow_mut().push(d.roots.clone()));
 }
-fn log_moved(_: &mut App, e: &Emitted<OnChanged<Layout>>) {
+fn log_moved(_: &mut App, e: &Emitted<OnChanged<ComputedLayout>>) {
     MOVED.with(|l| l.borrow_mut().push(e.targets.to_vec()));
 }
 fn log_restyled(_: &mut App, e: &Emitted<OnChanged<LayoutStyle>>) {
@@ -83,7 +83,7 @@ fn child(app: &mut App, parent: NodeId, style: LayoutStyle) -> NodeId {
 }
 
 fn rect(app: &App, id: NodeId) -> Rect {
-    app.component::<Layout>(id).unwrap().rect
+    app.component::<ComputedLayout>(id).unwrap().rect
 }
 
 fn fixed(w: f32, h: f32) -> LayoutStyle {
@@ -140,13 +140,13 @@ fn measure_helpers() {
 
 #[test]
 fn layout_content_is_inside_padding_and_border() {
-    let l = Layout {
+    let l = ComputedLayout {
         rect: Rect::new(10.0, 20.0, 100.0, 50.0),
         padding: Insets::new(1.0, 2.0, 3.0, 4.0),
         border: Insets::all(1.0),
     };
     assert_eq!(l.content(), Rect::new(15.0, 22.0, 92.0, 44.0));
-    let tiny = Layout {
+    let tiny = ComputedLayout {
         rect: Rect::new(0.0, 0.0, 10.0, 10.0),
         padding: Insets::all(8.0),
         border: Insets::all(0.0),
@@ -337,7 +337,7 @@ fn padding_and_border_inset_the_content_and_offset_the_child() {
         .id();
     let inner = child(&mut app, r, LayoutStyle::default().fill());
     app.tick();
-    let root_layout = *app.component::<Layout>(r).unwrap();
+    let root_layout = *app.component::<ComputedLayout>(r).unwrap();
     assert_eq!(root_layout.padding, Insets::all(10.0));
     assert_eq!(root_layout.border, Insets::all(2.0));
     assert_eq!(root_layout.content(), Rect::new(12.0, 12.0, 276.0, 76.0));
@@ -832,7 +832,7 @@ fn asymmetric_padding_and_border_inset_each_side_on_its_own() {
     let inner = child(&mut app, r, LayoutStyle::default().fill());
     app.tick();
 
-    let l = *app.component::<Layout>(r).unwrap();
+    let l = *app.component::<ComputedLayout>(r).unwrap();
     assert_eq!(l.padding, Insets::new(4.0, 8.0, 12.0, 16.0));
     assert_eq!(l.border, Insets::new(1.0, 2.0, 3.0, 4.0));
     // left 4 + 16, top 1 + 4, and 200 - 20 - 10 by 100 - 5 - 15.

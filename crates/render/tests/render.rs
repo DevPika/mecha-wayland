@@ -806,7 +806,7 @@ fn a_write_after_the_drain_is_drawn_and_damaged_by_the_frame_that_draws_it() {
     // A `Layout` written between the drain and the frame: nothing marked
     // the node, yet the frame draws it at its new bounds.
     let moved = Rect::new(0.0, 0.0, 60.0, 20.0);
-    app.component_mut::<Layout>(a).unwrap().rect = moved;
+    app.component_mut::<ComputedLayout>(a).unwrap().rect = moved;
     frame(&mut app, win.id());
     assert_eq!(
         queue(&mut app, win.id(), 1).scissor,

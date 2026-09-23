@@ -23,7 +23,7 @@ thread_local! {
 fn log_painted(_: &mut App, e: &Emitted<OnChanged<Paint>>) {
     PAINTED.with(|l| l.borrow_mut().push(e.targets.to_vec()));
 }
-fn log_moved(_: &mut App, e: &Emitted<OnChanged<Layout>>) {
+fn log_moved(_: &mut App, e: &Emitted<OnChanged<ComputedLayout>>) {
     MOVED.with(|l| l.borrow_mut().push(e.targets.to_vec()));
 }
 fn take_painted() -> Vec<Vec<NodeId>> {
@@ -86,7 +86,7 @@ fn root(app: &mut App, width: f32, height: f32) -> NodeId {
 }
 
 fn rect(app: &App, id: NodeId) -> Rect {
-    app.component::<Layout>(id).unwrap().rect
+    app.component::<ComputedLayout>(id).unwrap().rect
 }
 
 // ── Div ─────────────────────────────────────────────────────────────────

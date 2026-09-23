@@ -3,7 +3,7 @@
 
 use app::{App, NodeId};
 use geometry::Point;
-use layout::Layout;
+use layout::ComputedLayout;
 
 use crate::contacts::HitSet;
 
@@ -18,7 +18,7 @@ use crate::contacts::HitSet;
 /// separate filter is needed for it.
 pub(crate) fn hit_test(app: &App, window: NodeId, position: Point) -> HitSet {
     let contains = |id: NodeId| {
-        app.component::<Layout>(id)
+        app.component::<ComputedLayout>(id)
             .is_some_and(|l| l.rect.contains(position))
     };
     let mut matches = HitSet::new();

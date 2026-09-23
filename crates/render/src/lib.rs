@@ -97,7 +97,7 @@
 
 use app::prelude::*;
 use geometry::{Color, Corners, Insets, Rect, Size};
-use layout::Layout;
+use layout::ComputedLayout;
 use paint::{AtlasId, AtlasTile, Paint};
 use window::{Frame, InWindow, RequestFrame, Window};
 
@@ -349,7 +349,7 @@ impl Module for RenderModule {
 // ---------------------------------------------------------------------------
 
 /// A `Layout` change: note the node and ask for its window.
-fn on_layout_changed(app: &mut App, e: &Emitted<OnChanged<Layout>>) {
+fn on_layout_changed(app: &mut App, e: &Emitted<OnChanged<ComputedLayout>>) {
     note(app, &e.targets);
 }
 
@@ -406,14 +406,14 @@ fn on_frame(app: &mut App, f: &Frame) {
         return;
     };
     let (scale, clear) = (win.scale(), win.clear());
-    let Some(layout) = app.component::<Layout>(w) else {
+    let Some(layout) = app.component::<ComputedLayout>(w) else {
         return;
     };
     let size = walk::scale_rect(layout.rect, scale).size;
 
     let (tree, mut data) = app.split();
     let (layouts, paints, mut drawn, mut scenes) =
-        data.query::<(&Layout, &Paint, &mut Drawn, ResMut<Scenes>)>();
+        data.query::<(&ComputedLayout, &Paint, &mut Drawn, ResMut<Scenes>)>();
     let scene = scenes.scene_or_new(w);
     let full = scene.begin(size, scale, clear);
     let visited = walk::walk(tree, &layouts, &paints, &mut drawn, w, scale, clear, scene);

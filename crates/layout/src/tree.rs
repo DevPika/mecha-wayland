@@ -21,7 +21,7 @@ use taffy::{
 };
 
 use crate::style::{Display, LayoutStyle};
-use crate::{Constraints, Layout, Measure, Scratch};
+use crate::{Constraints, ComputedLayout, Measure, Scratch};
 
 /// Taffy's id for a node: its slot.
 pub(crate) fn taffy_id(id: NodeId) -> TaffyId {
@@ -41,7 +41,7 @@ pub(crate) struct LayoutTree<'a> {
     slots: Vec<Option<NodeId>>,
     styles: Comps<'a, LayoutStyle>,
     measures: Comps<'a, Measure>,
-    layouts: CompsMut<'a, Layout>,
+    layouts: CompsMut<'a, ComputedLayout>,
     scratch: CompsMut<'a, Scratch>,
 }
 
@@ -51,7 +51,7 @@ impl<'a> LayoutTree<'a> {
         root: NodeId,
         styles: Comps<'a, LayoutStyle>,
         measures: Comps<'a, Measure>,
-        layouts: CompsMut<'a, Layout>,
+        layouts: CompsMut<'a, ComputedLayout>,
         scratch: CompsMut<'a, Scratch>,
     ) -> Self {
         let mut slots: Vec<Option<NodeId>> = Vec::new();
@@ -275,7 +275,7 @@ impl RoundTree for LayoutTree<'_> {
             scratch.abs = abs;
             scratch.pass = self.pass;
         }
-        let value = Layout {
+        let value = ComputedLayout {
             rect: Rect::new(
                 round(abs.x),
                 round(abs.y),

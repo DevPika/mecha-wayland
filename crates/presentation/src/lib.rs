@@ -473,7 +473,7 @@ fn replace_slots(
 /// the frame that fits.
 fn settle(app: &mut App, w: NodeId, proposed: (i32, i32)) {
     let layout = app
-        .component::<Layout>(w)
+        .component::<ComputedLayout>(w)
         .map(|l| l.rect.size)
         .unwrap_or(Size::ZERO);
     let pick = |p: i32, l: f32, d: f32| {
