@@ -49,7 +49,7 @@ const HALF_BLUE: Color = Color::rgba(0.0, 0.0, 1.0, 0.5);
 
 /// Layout, paint, window and render, `buffers` frames of damage, the loop
 /// closed by `answer`, requests logged.
-fn app_with(buffers: usize) -> App {
+fn app_with(buffers: usize, externally_driven: bool) -> App {
     let mut app = App::new();
     app.add_module(LayoutModule)
         .add_module(PaintModule)
@@ -57,11 +57,12 @@ fn app_with(buffers: usize) -> App {
         .add_module(RenderModule { buffers })
         .system(log_requested)
         .system(answer);
+    app.resource_mut::<LayoutControl>().externally_driven = externally_driven;
     app
 }
 
 fn app() -> App {
-    app_with(2)
+    app_with(2, false)
 }
 
 /// A 200 by 100 window cleared to black: everything at the top level has
@@ -800,13 +801,13 @@ fn a_hidden_node_damages_its_old_rect_and_draws_nothing() {
 
 #[test]
 fn a_write_after_the_drain_is_drawn_and_damaged_by_the_frame_that_draws_it() {
-    let mut app = app();
+    let mut app = app_with(2, true);
     let (win, a, _) = two_quads(&mut app);
 
     // A `Layout` written between the drain and the frame: nothing marked
     // the node, yet the frame draws it at its new bounds.
     let moved = Rect::new(0.0, 0.0, 60.0, 20.0);
-    app.component_mut::<ComputedLayout>(a).unwrap().rect = moved;
+    app.component_mut::<Layout>(a).unwrap().rect = moved;
     frame(&mut app, win.id());
     assert_eq!(
         queue(&mut app, win.id(), 1).scissor,
@@ -815,16 +816,112 @@ fn a_write_after_the_drain_is_drawn_and_damaged_by_the_frame_that_draws_it() {
     );
 
     app.tick();
-    assert_eq!(
-        take_requested(),
-        vec![win.id()],
-        "the drain notes the write and asks for a frame"
-    );
+    assert_eq!(take_requested(), vec![win.id()]);
     assert_eq!(
         queue(&mut app, win.id(), 1).scissor,
         vec![moved],
-        "the late mark finds the rect already current"
+        "the late notification redraws the current bounds"
     );
+}
+
+#[test]
+fn renderer_reads_displayed_window_and_content_geometry_not_targets() {
+    let mut app = app_with(2, true);
+    let win = app.spawn(app.root(), a_window());
+    let image = app.spawn_with(
+        win,
+        Leaf,
+        (boxed(40.0, 30.0), Paint::Polychrome(an_image())),
+    );
+    app.tick();
+    take_requested();
+
+    app.component_mut::<ComputedLayout>(win).unwrap().rect = Rect::new(0.0, 0.0, 900.0, 700.0);
+    app.component_mut::<ComputedLayout>(image).unwrap().rect = Rect::ZERO;
+    app.tick();
+    assert!(
+        take_requested().is_empty(),
+        "target changes are not subscribed to"
+    );
+    frame(&mut app, win.id());
+    assert_eq!(queue(&mut app, win.id(), 0).size, Size::new(200.0, 100.0));
+    assert_eq!(
+        queue(&mut app, win.id(), 0).opaque.commands[0].rect,
+        Rect::new(0.0, 0.0, 40.0, 30.0)
+    );
+
+    app.component_mut::<Layout>(win).unwrap().rect = Rect::new(0.0, 0.0, 250.0, 120.0);
+    let displayed = Layout {
+        rect: Rect::new(10.0, 20.0, 60.0, 40.0),
+        padding: Insets::new(1.0, 2.0, 3.0, 4.0),
+        border: Insets::all(1.0),
+    };
+    *app.component_mut::<Layout>(image).unwrap() = displayed;
+    app.tick();
+    assert_eq!(take_requested(), vec![win.id()]);
+    let q = queue(&mut app, win.id(), 1);
+    assert_eq!(q.size, Size::new(250.0, 120.0));
+    assert_eq!(q.opaque.commands[0].rect, displayed.content());
+}
+
+#[test]
+fn frame_time_layout_changes_damage_equal_bounds() {
+    #[derive(Default)]
+    struct NextLayout(Option<(NodeId, Layout)>);
+    impl Resource for NextLayout {}
+
+    fn animate(app: &mut App, _: &Frame) {
+        let next = app.resource_mut::<NextLayout>().0.take();
+        if let Some((id, layout)) = next {
+            *app.component_mut::<Layout>(id).unwrap() = layout;
+        }
+    }
+
+    let mut app = App::new();
+    app.add_module(LayoutModule)
+        .add_module(PaintModule)
+        .add_module(WindowModule)
+        .init_resource::<NextLayout>()
+        .system(animate)
+        .add_module(RenderModule::default())
+        .system(log_requested)
+        .system(answer);
+    app.resource_mut::<LayoutControl>().externally_driven = true;
+    let (win, a, _) = two_quads(&mut app);
+    let initial = *app.component::<Layout>(a).unwrap();
+    for layout in [
+        Layout {
+            padding: Insets::all(2.0),
+            ..initial
+        },
+        Layout {
+            border: Insets::all(1.0),
+            ..initial
+        },
+        Layout {
+            rect: Rect::new(0.1, 0.1, 50.0, 20.0),
+            ..initial
+        },
+    ] {
+        app.resource_mut::<NextLayout>().0 = Some((a.id(), layout));
+        frame(&mut app, win.id());
+        let q = queue(&mut app, win.id(), 1);
+        assert_eq!(
+            q.scissor,
+            vec![A_RECT],
+            "same-frame damage despite equal bounds"
+        );
+        assert_eq!(q.opaque.commands[0].rect, A_RECT);
+        assert!(take_requested().is_empty());
+
+        app.tick();
+        assert_eq!(take_requested(), vec![win.id()]);
+        assert_eq!(
+            queue(&mut app, win.id(), 1).scissor,
+            vec![A_RECT],
+            "the late notification also marks damage"
+        );
+    }
 }
 
 #[test]
@@ -845,7 +942,7 @@ fn a_clean_frame_has_nothing_to_do_and_a_clean_tick_asks_for_nothing() {
 
 #[test]
 fn ages_union_the_frames_held_and_anything_else_is_the_window() {
-    let mut app = app_with(2);
+    let mut app = app_with(2, false);
     let (win, a, b) = two_quads(&mut app);
 
     *app.component_mut::<Paint>(a).unwrap() = Paint::Quad(Quad::new(BLUE));

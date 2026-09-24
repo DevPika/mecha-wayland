@@ -11,9 +11,10 @@
 //!   lay out. Its subtree is laid out in its coordinates, the root's box
 //!   at the origin, sized by the root's own style. A node under no root is
 //!   never laid out.
-//! - Every node carries a [`Layout`], the resolved box in whole pixels,
-//!   written by the pass only when it changed, so `OnChanged<Layout>`
-//!   names exactly the boxes that moved.
+//! - Every node carries a [`ComputedLayout`], the target box in whole
+//!   pixels, and a [`Layout`], the displayed box. The first resolution
+//!   initializes both. Later resolutions also copy the displayed box unless
+//!   [`LayoutControl::externally_driven`] leaves it to another module.
 //! - The pass runs on `PostTick`, ahead of the core's `OnChanged` drains,
 //!   and takes the change records for the three inputs itself, so
 //!   `OnChanged<LayoutStyle>`, `OnChanged<Measure>` and
@@ -86,9 +87,9 @@ use tree::{LayoutTree, taffy_id};
 
 pub mod prelude {
     pub use crate::{
-        Align, Available, Constraints, Direction, Display, Justify, ComputedLayout, LayoutDone,
-        LayoutModule, LayoutRoot, LayoutStyle, Measure, Position, StyleContext, Val, Wrap, auto,
-        percent, px,
+        Align, Available, ComputedLayout, Constraints, Direction, Display, Justify, Layout,
+        LayoutControl, LayoutDone, LayoutModule, LayoutRoot, LayoutStyle, Measure, Position,
+        StyleContext, Val, Wrap, auto, percent, px,
     };
 }
 
@@ -219,7 +220,7 @@ impl fmt::Debug for Measure {
 }
 
 // ---------------------------------------------------------------------------
-// LayoutRoot, Layout
+// LayoutRoot, ComputedLayout, Layout
 // ---------------------------------------------------------------------------
 
 /// Marks the top of one independently laid-out tree. Only the subtree
@@ -231,10 +232,10 @@ pub struct LayoutRoot(pub bool);
 
 impl Component for LayoutRoot {}
 
-/// The box resolved for a node: rounded to whole pixels, in its root's
+/// The target box resolved for a node: rounded to whole pixels, in its root's
 /// coordinates. `padding` and `border` are what the content box is inset
 /// by. Written by the pass only, and only when it changed, so
-/// `OnChanged<Layout>` names exactly the nodes whose box moved.
+/// `OnChanged<ComputedLayout>` names exactly the nodes whose target changed.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct ComputedLayout {
     pub rect: Rect,
@@ -256,6 +257,57 @@ impl ComputedLayout {
     }
 }
 
+/// The displayed box in its layout root's coordinates. Initialized from
+/// [`ComputedLayout`] on first resolution, then copied on later resolutions
+/// unless [`LayoutControl::externally_driven`] is set. Renderers read this
+/// box; external systems may write fractional pixel values.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Layout {
+    pub rect: Rect,
+    pub padding: Insets<f32>,
+    pub border: Insets<f32>,
+}
+
+impl Component for Layout {}
+
+impl From<ComputedLayout> for Layout {
+    fn from(value: ComputedLayout) -> Self {
+        Self {
+            rect: value.rect,
+            padding: value.padding,
+            border: value.border,
+        }
+    }
+}
+
+impl Layout {
+    /// The rect inside padding and border, each dimension clamped at zero.
+    pub fn content(&self) -> Rect {
+        self.rect.inset(Insets::new(
+            self.padding.top + self.border.top,
+            self.padding.right + self.border.right,
+            self.padding.bottom + self.border.bottom,
+            self.padding.left + self.border.left,
+        ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Layout control
+// ---------------------------------------------------------------------------
+
+/// Controls who maintains displayed layouts after their first resolution.
+/// Initialized by [`LayoutModule`]; an external driver can claim subsequent
+/// updates by setting `externally_driven` during its own installation.
+#[derive(Default)]
+pub struct LayoutControl {
+    /// False by default: copy every resolved target into `Layout`. When true,
+    /// the external driver must maintain all displayed layouts, including roots.
+    pub externally_driven: bool,
+}
+
+impl Resource for LayoutControl {}
+
 // ---------------------------------------------------------------------------
 // Private state
 // ---------------------------------------------------------------------------
@@ -267,17 +319,19 @@ impl ComputedLayout {
 /// rounding, which the rounding walk reads back for this node's own
 /// offset from its parent. `abs` is the node's unrounded absolute
 /// origin, the sum of those offsets down from the root: the rounding
-/// walk sets it on the way down and rounds it once for the `Layout`,
+/// walk sets it on the way down and rounds it once for the `ComputedLayout`,
 /// which is what keeps rounding errors from accumulating. `pass` is the
 /// number of the pass that last set `abs`, so the walk can check a
 /// parent was visited before its child; both are only meaningful within
-/// the pass that wrote them.
+/// the pass that wrote them. `initialized` records the first actual
+/// resolution, even when the resolved box equals the default.
 #[derive(Default)]
 pub(crate) struct Scratch {
     pub(crate) cache: taffy::tree::Cache,
     pub(crate) unrounded: taffy::tree::Layout,
     pub(crate) abs: geometry::Point,
     pub(crate) pass: u32,
+    pub(crate) initialized: bool,
 }
 
 impl Component for Scratch {}
@@ -313,7 +367,7 @@ impl LayoutDone {
 // The module
 // ---------------------------------------------------------------------------
 
-/// Registers the columns, the resource and the systems. The `PostTick`
+/// Registers the columns, resources and systems. The `PostTick`
 /// system is registered *before* the components on purpose: each
 /// `register_component` installs a `PostTick` drain for `OnChanged<C>`,
 /// and systems for one signal run in registration order, so `pass` sees
@@ -329,7 +383,9 @@ impl Module for LayoutModule {
             .register_component::<Measure>()
             .register_component::<LayoutRoot>()
             .register_component::<ComputedLayout>()
+            .register_component::<Layout>()
             .register_component::<Scratch>()
+            .init_resource::<LayoutControl>()
             .init_resource::<DirtyRoots>()
             .system(on_spawned)
             .system(on_removed);
@@ -341,8 +397,9 @@ impl Module for LayoutModule {
 fn pass(app: &mut App, _: &PostTick) {
     drain(app);
     let roots = take_dirty_roots(app);
+    let externally_driven = app.resource::<LayoutControl>().externally_driven;
     for &root in &roots {
-        layout_root(app, root);
+        layout_root(app, root, externally_driven);
     }
     // The pass wrote `Scratch` through flagging guards, and `Scratch`'s
     // drain runs after this system; taking the record here means that
@@ -352,12 +409,27 @@ fn pass(app: &mut App, _: &PostTick) {
 }
 
 /// One pass over `root`'s subtree. The root is offered max-content space
-/// and sized by its own style. `round_layout` writes every `Layout`.
-fn layout_root(app: &mut App, root: NodeId) {
+/// and sized by its own style. `round_layout` writes every target and
+/// initializes displayed boxes on first resolution.
+fn layout_root(app: &mut App, root: NodeId, externally_driven: bool) {
     let (tree, mut data) = app.split();
-    let (styles, measures, layouts, scratch) =
-        data.query::<(&LayoutStyle, &Measure, &mut ComputedLayout, &mut Scratch)>();
-    let mut view = LayoutTree::new(tree, root, styles, measures, layouts, scratch);
+    let (styles, measures, layouts, displayed, scratch) = data.query::<(
+        &LayoutStyle,
+        &Measure,
+        &mut ComputedLayout,
+        &mut Layout,
+        &mut Scratch,
+    )>();
+    let mut view = LayoutTree::new(
+        tree,
+        root,
+        styles,
+        measures,
+        layouts,
+        displayed,
+        scratch,
+        externally_driven,
+    );
     let id = taffy_id(root);
     compute_root_layout(&mut view, id, TSize::MAX_CONTENT);
     round_layout(&mut view, id);
