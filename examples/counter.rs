@@ -82,6 +82,7 @@ impl Widget for Counter {
             let count = ctx.me().step(1);
             ctx.at(label).unwrap().set_text(count.to_string());
         });
+        s.spawn(me, input(b.font));
 
         Counter { count: 0 }
     }
