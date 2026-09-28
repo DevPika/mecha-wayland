@@ -66,6 +66,7 @@ impl Widget for Counter {
             LayoutStyle::default().column().center().gap(px(12.0));
 
         let label = s.spawn(me, text(b.font, "0").size(24));
+        let input = s.spawn(me, input(b.font));
         let row = s.spawn(
             me,
             div().style(LayoutStyle::default().row().center().gap(px(8.0))),
@@ -76,13 +77,14 @@ impl Widget for Counter {
         s.on::<Clicked>(minus, move |ctx, _| {
             let count = ctx.me().step(-1);
             ctx.at(label).unwrap().set_text(count.to_string());
+            ctx.at(input).unwrap().set_input("minus");
         });
 
         s.on::<Clicked>(plus, move |ctx, _| {
             let count = ctx.me().step(1);
             ctx.at(label).unwrap().set_text(count.to_string());
+            ctx.at(input).unwrap().set_input("plus");
         });
-        s.spawn(me, input(b.font));
 
         Counter { count: 0 }
     }

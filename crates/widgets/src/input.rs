@@ -1,9 +1,11 @@
-use app::{Build, Widget};
+use app::{Build, Context, Handle, Widget};
 use atlas::FontId;
 
-use crate::{div, text};
+use crate::{Text, TextContext, div, text};
 
-pub struct Input;
+pub struct Input {
+    content: Handle<Text>,
+}
 
 pub fn input(font: FontId) -> InputBuilder {
     InputBuilder { font }
@@ -26,7 +28,18 @@ impl Widget for Input {
         s: &mut app::prelude::Spawner<'_, Self>,
     ) -> Self {
         let div = s.spawn(me, div());
-        s.spawn(div, text(b.font, "hello").size(24));
-        Input
+        let content = s.spawn(div, text(b.font, "hello").size(24));
+        Input { content }
+    }
+}
+
+pub trait InputContext {
+    fn set_input(&mut self, text: impl Into<String>);
+}
+
+impl InputContext for Context<'_, Input> {
+    fn set_input(&mut self, text: impl Into<String>) {
+        let label = self.me().content;
+        self.at(label).unwrap().set_text(text);
     }
 }
