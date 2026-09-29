@@ -6,6 +6,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+animation.workspace = true
 app.workspace = true
 dbus.workspace = true
 atlas = { workspace = true, features = ["svg"] }
@@ -49,6 +50,7 @@ members = [
 resolver = "3"
 
 [workspace.dependencies]
+animation = { path = "crates/animation" }
 app = { path = "crates/app" }
 dbus = { path = "crates/dbus" }
 atlas = { path = "crates/atlas" }

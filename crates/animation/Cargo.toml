@@ -9,3 +9,6 @@ paint.workspace = true
 layout.workspace = true
 geometry.workspace = true
 window.workspace = true
+
+[dev-dependencies]
+render.workspace = true
