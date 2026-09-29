@@ -29,7 +29,7 @@ mechanix-widgets.workspace = true
 members = [
     "crates/app",
     "crates/dbus",
-    "crates/animation"
+    "crates/animation",
     "crates/atlas",
     "crates/geometry",
     "crates/gles",
