@@ -1,8 +1,11 @@
+//! Shared clock snapshots. Sampling records elapsed time; it does not schedule
+//! work or wake a blocked runner when time passes.
+
 use std::time::{Duration, Instant};
 
 use app::prelude::*;
 
-/// A monotonic clock sampled on `PostTick` and on each window's `Frame`.
+/// A monotonic clock sampled on [`PostTick`] and on each window's [`window::Frame`].
 /// Reads remain constant until the next sample. `delta` spans consecutive
 /// samples, not consecutive frames of any particular window.
 #[derive(Debug)]
@@ -21,14 +24,20 @@ impl Time {
         self.last_update
     }
 
+    /// Time from resource creation to the latest sample, not to the instant of
+    /// this call. Reading it does not advance the clock.
     pub fn elapsed(&self) -> Duration {
         self.last_update.duration_since(self.started)
     }
 
+    /// Time between the latest two samples, initially zero. This is not a
+    /// per-window frame delta: either a tick or any window's frame updates it.
     pub fn delta(&self) -> Duration {
         self.delta
     }
 
+    /// Record a supplied monotonic instant. Production supplies `Instant::now()`;
+    /// clock tests supply deterministic instants to avoid sleeps.
     fn update_at(&mut self, now: Instant) {
         self.delta = now.duration_since(self.last_update);
         self.last_update = now;
@@ -36,6 +45,7 @@ impl Time {
 }
 
 impl Default for Time {
+    /// Start the clock now with zero elapsed time and delta.
     fn default() -> Self {
         let now = Instant::now();
         Self {
@@ -46,6 +56,9 @@ impl Default for Time {
     }
 }
 
+/// Sample the clock once per dispatched signal, before the consumers of that
+/// sample run. Installed for both `PostTick` (before `LayoutDone` dispatch) and
+/// `Frame` (before interpolation); the signal payload is deliberately unused.
 pub(crate) fn update_time<S: Signal>(app: &mut App, _: &S) {
     app.resource_mut::<Time>().update_at(Instant::now());
 }

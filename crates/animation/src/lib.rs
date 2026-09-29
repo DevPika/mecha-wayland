@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Duration-based transitions from Taffy's `ComputedLayout` to displayed `Layout`.
+//! Duration-based transitions from Taffy's [`ComputedLayout`] to displayed [`Layout`].
 //!
 //! Install after `LayoutModule` and `WindowModule`, and before `RenderModule`.
 //! Installation sets `LayoutControl::externally_driven` automatically. This
@@ -7,12 +7,38 @@
 //! targets, while animated nodes interpolate.
 //! Settings inherit from the nearest configured ancestor; a zero duration
 //! overrides inheritance and snaps. Layout roots always snap. The first layout
-//! is initialized by the layout module without an entrance animation.
+//! resolution is copied immediately by the layout module. Later resolutions,
+//! including a compositor resize during startup, can start transitions.
 //!
 //! After each layout pass, changed targets start transitions and active windows
 //! request frames. On `Frame`, the clock is sampled and displayed geometry is
 //! advanced before rendering. A replacement target restarts from the currently
 //! displayed layout, without velocity matching. Hit testing still uses targets.
+//!
+//! # Scheduling
+//!
+//! There are two separate jobs, not two ways to advance an animation:
+//!
+//! - [`LayoutDone`] means the tick's layout pass has finished. Its system
+//!   reconciles targets and settings with existing transitions, copies nodes
+//!   that should not animate, and requests frames for windows needing work.
+//!   The signal is sent even when no root needed recomputing, so disabling
+//!   animation and continuing existing transitions do not require a new layout.
+//! - [`Frame`] names one window with a drawing opportunity. Its system samples
+//!   existing transitions into `Layout` before the renderer reads it. This is
+//!   not a notification that pixels have reached the display.
+//!
+//! The normal order, with the modules installed as described above, is:
+//!
+//! ```text
+//! PostTick:   layout resolves targets and queues LayoutDone; Time is sampled
+//! LayoutDone: copy nonanimated targets, prepare transitions, request frames
+//! Frame(w):   sample Time, advance w's transitions, then render w
+//! ```
+//!
+//! These are queued signals, not a fixed-rate clock or necessarily adjacent
+//! operations. The platform decides when requested frames can run. [`Time`]
+//! only samples the clock; it does not install a timer or wake the runner.
 
 use std::time::{Duration, Instant};
 
@@ -25,23 +51,51 @@ mod time;
 
 pub use time::Time;
 
+/// The animation types normally imported by a consumer.
 pub mod prelude {
     pub use crate::{AnimationModule, AnimationSettings, AnimationTime, Time};
 }
 
+/// How long a transition takes. Currently only a fixed duration is supported.
 #[derive(Debug, Clone, Copy)]
 pub enum AnimationTime {
+    /// Elapsed monotonic time from a transition's start to its exact target.
+    /// Zero means copy immediately rather than start a transition.
     Duration(Duration),
 }
 
-/// Default means inherit. Explicit settings replace the nearest ancestor's
-/// settings; an explicit zero duration disables transitions for the subtree.
+/// A node's optional explicit animation configuration.
+///
+/// Every live node has this component once [`AnimationModule`] is installed.
+/// `Default` contains `None`, meaning "inherit", not "disable animation".
+/// The nearest explicit settings on the node or its ancestors win. If none
+/// exist, the node's displayed layout copies its target without animating.
+///
+/// [`AnimationSettings::new`] contains `Some(settings)`, even for a zero
+/// duration. An explicit zero duration therefore overrides an animated parent
+/// and snaps; descendants inherit that choice unless they override it again.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AnimationSettings(Option<Settings>);
 
 impl Component for AnimationSettings {}
 
 impl AnimationSettings {
+    /// Set this node's duration and easing, overriding inherited settings.
+    ///
+    /// `easing` accepts normalized elapsed time and returns the interpolation
+    /// amount. Its output is not clamped, allowing overshoot. At completion,
+    /// the exact target is assigned regardless of the easing function.
+    /// Functions and noncapturing closures can be supplied.
+    ///
+    /// ```
+    /// use animation::{AnimationSettings, AnimationTime};
+    /// use std::time::Duration;
+    ///
+    /// let settings = AnimationSettings::new(
+    ///     AnimationTime::Duration(Duration::from_millis(1500)),
+    ///     |t| t * t,
+    /// );
+    /// ```
     pub fn new(time: AnimationTime, easing: fn(f32) -> f32) -> Self {
         let AnimationTime::Duration(duration) = time;
         Self(Some(Settings { duration, easing }))
@@ -49,16 +103,24 @@ impl AnimationSettings {
 }
 // impl Default for AnimationSettings
 
+/// Concrete configuration with no inheritance state. Copied into a running
+/// transition so its timing and easing stay fixed until it ends or is replaced.
 #[derive(Debug, Clone, Copy)]
 struct Settings {
     duration: Duration,
     easing: fn(f32) -> f32,
 }
 
+/// Per-node runtime state: `None` is idle, `Some` is a transition in progress.
+/// Keeping the active data optional avoids dummy start times and layouts on
+/// nodes that have never animated. The component resets when its node is removed.
 #[derive(Default)]
 struct Transition(Option<Running>);
 impl Component for Transition {}
 
+/// A transition's fixed starting point, destination, clock origin and settings.
+/// Frame samples always interpolate these endpoints, not the previous frame's
+/// output, so the result depends on elapsed time rather than frame count.
 struct Running {
     from: Layout,
     target: Layout,
@@ -66,8 +128,19 @@ struct Running {
     settings: Settings,
 }
 
+/// Installs the clock, settings and transition components, and animation systems.
+///
+/// Install after `layout::LayoutModule` and `window::WindowModule`, and before
+/// the renderer. Installation claims displayed-layout updates through
+/// [`LayoutControl`]; layout still initializes every node's first resolved box.
+///
+/// The systems sample [`Time`] on [`PostTick`] and [`Frame`], reconcile targets
+/// on [`LayoutDone`], and advance transitions on `Frame`. Registration order
+/// ensures the frame's clock sample precedes interpolation, which must precede
+/// rendering. There is no independent timer or frame-rate loop in this module.
 pub struct AnimationModule;
 impl Module for AnimationModule {
+    /// Claim displayed layouts and register the systems in execution order.
     fn install(self, app: &mut App) {
         app.resource_mut::<LayoutControl>().externally_driven = true;
         app.init_resource::<Time>()
@@ -80,12 +153,35 @@ impl Module for AnimationModule {
     }
 }
 
+/// Resolve a live node's explicit settings, then its nearest ancestor's.
+/// Siblings are never consulted. Zero-duration settings still stop the search;
+/// only `None` means continue inheriting. Nothing is copied into child settings.
 fn settings(app: &App, id: NodeId) -> Option<Settings> {
     std::iter::once(id)
         .chain(app.ancestors(id))
         .find_map(|node| app.component::<AnimationSettings>(node)?.0)
 }
 
+/// Reconcile resolved targets with displayed layouts; do not advance time here.
+///
+/// For each node, this system:
+/// - Copies the target and cancels a transition when animation is disabled,
+///   there is no window, or the node is a layout root.
+/// - Keeps a running transition if its destination has not changed.
+/// - Otherwise starts or replaces a transition from the currently displayed
+///   layout, or leaves the node idle if it already equals its target.
+/// - Requests one frame per window with a running transition or a changed copy.
+///
+/// `LayoutDone` is queued by layout's `PostTick` system. By its dispatch, all
+/// `PostTick` systems (including the clock sample) and the queued change-event
+/// handlers have run. A later `PostTick` system could also do this job if ordered
+/// after layout and the clock; this signal explicitly uses layout's completion
+/// point instead. Writes here are after the normal `Layout` change drain.
+///
+/// The signal's dirty-root list is deliberately unused: settings can change
+/// without any layout recomputation, and active animations still need frames
+/// on clean ticks. Positive duration/easing changes alone do not replace a
+/// running transition; it keeps its captured settings until its target changes.
 fn on_layout_done(app: &mut App, _: &LayoutDone) {
     let now = app.resource::<Time>().now();
     let nodes: Vec<NodeId> = std::iter::once(app.root())
@@ -130,16 +226,26 @@ fn on_layout_done(app: &mut App, _: &LayoutDone) {
             windows.push(window);
         }
     }
+    // Transition is private bookkeeping, not a consumer-facing change event.
     app.take_changed::<Transition>().for_each(drop);
     for window in windows {
         app.signal(RequestFrame(window));
     }
 }
 
+/// Advance existing transitions for the window whose drawing opportunity arrived.
+/// The clock's `Frame` system has already sampled `Time`, and render runs after
+/// this system. It neither discovers new targets nor requests another frame;
+/// those jobs belong to `on_layout_done`. A frame is not a layout pass.
 fn on_frame(app: &mut App, frame: &Frame) {
     advance(app, frame.0, app.resource::<Time>().now());
 }
 
+/// Sample one window's active transitions at `now`, writing only displayed layout.
+/// Each transition uses elapsed time since its own start, not global `Time::delta`,
+/// which may include intervening ticks or other windows' frames. Completion writes
+/// the exact target and clears the running state. Other windows are untouched.
+/// The explicit timestamp also lets tests sample progress without sleeping.
 fn advance(app: &mut App, window: NodeId, now: Instant) {
     let (membership, mut layouts, mut transitions) =
         app.query::<(&InWindow, &mut Layout, &mut Transition)>();
@@ -148,7 +254,7 @@ fn advance(app: &mut App, window: NodeId, now: Instant) {
             continue;
         }
         let Some(running) = &transition.0 else {
-            continue;
+            continue; // skip everything that doesn't have a currently running animation
         };
         let elapsed = now.duration_since(running.started);
         let finished = elapsed >= running.settings.duration;
@@ -171,6 +277,9 @@ fn advance(app: &mut App, window: NodeId, now: Instant) {
     app.take_changed::<Transition>().for_each(drop);
 }
 
+/// Blend every numeric layout field using the already-eased amount `t`.
+/// This does not rerun Taffy or enforce intermediate layout constraints. The
+/// amount is not clamped and the result is not rounded to device pixels here.
 fn interpolate(from: Layout, to: Layout, t: f32) -> Layout {
     let lerp = |a: f32, b: f32| a + (b - a) * t;
     let insets = |a: Insets<f32>, b: Insets<f32>| {

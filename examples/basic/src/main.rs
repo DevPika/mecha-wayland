@@ -50,12 +50,10 @@ impl Widget for Shell {
 			win,
 			Leaf,
 			(
-				/*
 				AnimationSettings::new(
 					AnimationTime::Duration(Duration::from_millis(1500)),
 					|t| t * t * t,
 				),
-				*/
 				LayoutStyle::default().column().size(px(440.0), px(200.0)),
 				Paint::Quad(Quad::new(Color::rgb(1.0, 0.45, 0.8)).radius(12.0)),
 			)
