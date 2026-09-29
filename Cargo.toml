@@ -20,6 +20,7 @@ wayland.workspace = true
 widgets.workspace = true
 window.workspace = true
 theme.workspace = true
+text-input.workspace = true
 
 [workspace]
 members = [
@@ -55,6 +56,7 @@ wayland = { path = "crates/wayland" }
 widgets = { path = "crates/widgets" }
 window = { path = "crates/window" }
 theme = { path = "crates/theme" }
+text-input = { path = "crates/text-input" }
 bitflags = "2"
 fontdue = "0.9"
 gbm = { version = "0.18", default-features = false }

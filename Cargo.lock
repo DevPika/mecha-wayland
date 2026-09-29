@@ -376,6 +376,7 @@ dependencies = [
  "presentation",
  "render",
  "ring",
+ "text-input",
  "theme",
  "wayland",
  "widgets",
@@ -708,6 +709,17 @@ dependencies = [
 [[package]]
 name = "text-input"
 version = "0.1.0"
+dependencies = [
+ "app",
+ "atlas",
+ "interactivity",
+ "layout",
+ "paint",
+ "ring",
+ "wayland",
+ "widgets",
+ "window",
+]
 
 [[package]]
 name = "theme"
