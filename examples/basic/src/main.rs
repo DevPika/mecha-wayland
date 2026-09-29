@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use mecha_wayland::prelude::*;
 
 struct Leaf;
@@ -43,6 +45,31 @@ impl Widget for Shell {
 		s.on::<Clicked>(panel, |_,e|{
 			eprintln!("panel: Click {:?} at {:?}", e.contact, e.position);
 		});
+
+		let panel2 = s.spawn_with(
+			win,
+			Leaf,
+			(
+				/*
+				AnimationSettings::new(
+					AnimationTime::Duration(Duration::from_millis(1500)),
+					|t| t * t * t,
+				),
+				*/
+				LayoutStyle::default().column().size(px(440.0), px(200.0)),
+				Paint::Quad(Quad::new(Color::rgb(1.0, 0.45, 0.8)).radius(12.0)),
+			)
+		);
+
+		s.on::<Clicked>(panel2, move |ctx, _| {
+			let mut panel = ctx.at(panel2).unwrap();
+			let width = if panel.style().width == px(440.0) {
+				px(220.0)
+			} else {
+				px(440.0)
+			};
+			panel.set_width(width);
+		});
 		Shell
 	}
 }
@@ -53,6 +80,7 @@ fn main() {
 		.add_module(PaintModule)
 		.add_module(WindowModule)
 		.add_module(InteractivityModule)
+		.add_module(AnimationModule)
 		.add_module(RenderModule::default())
 		.insert_resource(Atlas::new());
 	app.add_module(RingModule::default())
