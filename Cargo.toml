@@ -36,7 +36,7 @@ members = [
     "crates/wayland",
     "crates/widgets",
     "crates/window",
-    "crates/theme",
+    "crates/theme", "crates/text-input",
 ]
 resolver = "3"
 
