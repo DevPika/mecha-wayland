@@ -68,6 +68,36 @@ impl Widget for Shell {
 			};
 			panel.set_width(width);
 		});
+
+		let panel3 = s.spawn_with(
+			win,
+			Leaf,
+			(
+				AnimationSettings::new(
+					AnimationTime::Duration(Duration::from_millis(1500)),
+					|t| t, // linear easing
+				),
+				LayoutStyle::default().column().size(px(200.0), px(180.0)),
+				Paint::Quad(Quad::new(Color::rgb(0.456, 0.30, 0.08)).radius(12.0)),
+			)
+		);
+
+		s.on::<Clicked>(panel3, move |ctx, _| {
+			let mut panel = ctx.at(panel3).unwrap();
+			// change 
+			*panel.component_mut::<AnimationSettings>().unwrap() =
+			AnimationSettings::new(
+				AnimationTime::Duration(Duration::from_millis(3000)),
+				|t| t * t * t,
+			);
+			let width = if panel.style().width == px(440.0) {
+				px(180.0)
+			} else {
+				px(440.0)
+			};
+			panel.set_width(width);
+		});
+
 		Shell
 	}
 }
