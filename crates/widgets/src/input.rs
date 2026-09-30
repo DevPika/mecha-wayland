@@ -11,9 +11,12 @@
 //! cursor, or the new preedit shown there.
 
 use app::{Build, Context, Event, Handle, Widget};
-use atlas::FontId;
+use atlas::{Atlas, FontId};
+use geometry::Color;
+use layout::{LayoutStyle, StyleContext, px};
+use paint::{Paint, PaintContext, Quad};
 
-use crate::{Text, TextContext, div, text};
+use crate::{Div, Text, TextContext, div, text};
 
 /// One applied edit: everything a single `zwp_text_input_v3.done`
 /// carried, emitted at the focused [`Input`] by the `text-input` crate.
@@ -35,13 +38,30 @@ pub struct InputEdit {
 }
 impl Event for InputEdit {}
 
+/// A focus change: emitted at an [`Input`] by the `text-input` crate
+/// when it gains or loses the text focus. The widget shows its caret
+/// only while focused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InputFocus {
+    pub focused: bool,
+}
+impl Event for InputFocus {}
+
 pub struct Input {
     content: Handle<Text>,
+    /// A thin absolutely-positioned bar overlaid on `content` at the
+    /// text cursor's x; the static caret this widget shows.
+    caret: Handle<Div>,
+    font: FontId,
+    px: u16,
     string: String,
     /// The cursor's byte offset in `string`.
     cursor: usize,
     /// The preedit shown at the cursor; never part of `string`.
     preedit: Option<String>,
+    /// Whether this widget holds the text focus; the caret is shown
+    /// only while this is `true`.
+    focused: bool,
 }
 
 impl Input {
@@ -131,28 +151,74 @@ impl Widget for Input {
         me: app::prelude::Handle<Self>,
         s: &mut app::prelude::Spawner<'_, Self>,
     ) -> Self {
-        let div = s.spawn(me, div());
-        let content = s.spawn(div, text(b.font, "").size(24));
+        const PX: u16 = 24;
+        let container = s.spawn(me, div());
+        let content = s.spawn(container, text(b.font, "").size(PX));
+        // A static 1px caret, sized to the line, positioned over `content`
+        // by `sync`'s `set_left`. Absolute so it never enters the flex flow.
+        let line_height = s.resource::<Atlas>().line(b.font, PX).ascent;
+        let caret = s.spawn(
+            container,
+            div()
+                .style(
+                    LayoutStyle::default()
+                        .absolute()
+                        .size(px(1.0), px(line_height)),
+                )
+                .background(Color::WHITE),
+        );
         s.on::<InputEdit>(me, |ctx, e| {
             ctx.me().apply(e);
             sync(ctx);
         });
+        s.on::<InputFocus>(me, |ctx, e| {
+            ctx.me().focused = e.focused;
+            sync(ctx);
+        });
         Input {
             content,
+            caret,
+            font: b.font,
+            px: PX,
             string: String::new(),
             cursor: 0,
             preedit: None,
+            focused: false,
         }
     }
 }
 
-/// Push what the widget shows to its `Text`.
+/// Push what the widget shows to its `Text`, and park the caret over
+/// it at the text cursor's x — the width of the glyphs before the
+/// cursor. The caret is hidden (`Paint::None`) when the widget is not
+/// focused.
 fn sync(ctx: &mut Context<'_, Input>) {
-    let (label, display) = {
+    let (content, caret, font, font_px, focused, before_cursor, display) = {
         let me = ctx.me();
-        (me.content, me.display())
+        (
+            me.content,
+            me.caret,
+            me.font,
+            me.px,
+            me.focused,
+            me.string[..me.cursor].to_string(),
+            me.display(),
+        )
     };
-    ctx.at(label).unwrap().set_text(display);
+    ctx.at(content).unwrap().set_text(display);
+    let x = if focused {
+        let mut atlas = ctx.resource_mut::<Atlas>();
+        crate::text::measure(&mut atlas, font, font_px, &before_cursor)
+    } else {
+        0.0
+    };
+    let mut caret = ctx.at(caret).unwrap();
+    if focused {
+        caret.set_left(px(x));
+        caret.set_paint(Paint::Quad(Quad::new(Color::WHITE)));
+    } else {
+        caret.set_paint(Paint::None);
+    }
 }
 
 pub trait InputContext {

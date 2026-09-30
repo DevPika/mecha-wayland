@@ -73,7 +73,7 @@
 use app::prelude::*;
 use interactivity::Press;
 use wayland::prelude::*;
-use widgets::{Input, InputEdit};
+use widgets::{Input, InputEdit, InputFocus};
 
 pub mod prelude {
     pub use crate::{TextInput, TextInputModule};
@@ -160,36 +160,56 @@ fn focus(app: &mut App, w: NodeId) {
         Some(i) => (i.text().to_string(), i.cursor()),
         None => (String::new(), 0),
     };
-    let (mut ti, mut wl) = app.query::<(ResMut<TextInput>, ResMut<Wayland>)>();
-    let ti = &mut *ti;
-    if ti.enabled {
-        ti.input.disable(&mut wl);
-        ti.input.commit(&mut wl);
-        ti.enabled = false;
+    let prev = app.resource::<TextInput>().focused;
+    {
+        let (mut ti, mut wl) = app.query::<(ResMut<TextInput>, ResMut<Wayland>)>();
+        let ti = &mut *ti;
+        if ti.enabled {
+            ti.input.disable(&mut wl);
+            ti.input.commit(&mut wl);
+            ti.enabled = false;
+        }
+        ti.focused = Some(w);
+        ti.pending = None;
+        if ti.entered && !ti.enabled {
+            ti.input.enable(&mut wl);
+            let (text, cursor) = cap(&text, cursor);
+            ti.input
+                .set_surrounding_text(&mut wl, &text, cursor as i32, cursor as i32);
+            ti.input.commit(&mut wl);
+            ti.enabled = true;
+        }
     }
-    ti.focused = Some(w);
-    ti.pending = None;
-    if ti.entered && !ti.enabled {
-        ti.input.enable(&mut wl);
-        let (text, cursor) = cap(&text, cursor);
-        ti.input
-            .set_surrounding_text(&mut wl, &text, cursor as i32, cursor as i32);
-        ti.input.commit(&mut wl);
-        ti.enabled = true;
+    // Tell the widgets: the old one loses the caret, the new one gains it.
+    if let Some(prev) = prev {
+        if prev != w {
+            app.emit(InputFocus { focused: false }, prev);
+        }
     }
+    app.emit(InputFocus { focused: true }, w);
 }
 
 /// Blur: the committed `disable`, and no focused widget.
 fn blur(app: &mut App) {
-    let (mut ti, mut wl) = app.query::<(ResMut<TextInput>, ResMut<Wayland>)>();
-    let ti = &mut *ti;
-    if ti.enabled {
-        ti.input.disable(&mut wl);
-        ti.input.commit(&mut wl);
+    let prev = {
+        let (mut ti, mut wl) = app.query::<(ResMut<TextInput>, ResMut<Wayland>)>();
+        let ti = &mut *ti;
+        if ti.enabled {
+            ti.input.disable(&mut wl);
+            ti.input.commit(&mut wl);
+        }
+        ti.enabled = false;
+        ti.focused.take()
+        // `pending` is cleared below, after the query borrow ends.
+    };
+    {
+        let mut ti = app.resource_mut::<TextInput>();
+        ti.pending = None;
     }
-    ti.enabled = false;
-    ti.focused = None;
-    ti.pending = None;
+    // Tell the widget its caret is gone.
+    if let Some(prev) = prev {
+        app.emit(InputFocus { focused: false }, prev);
+    }
 }
 
 /// The surrounding text is capped at 4000 bytes by the protocol; keep
