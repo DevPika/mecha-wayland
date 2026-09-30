@@ -253,7 +253,7 @@ fn on_text_input(app: &mut App, e: &ZwpTextInputV3Event) {
         ZwpTextInputV3Event::CommitString { text, .. } => {
             let mut ti = app.resource_mut::<TextInput>();
             let edit = ti.pending.get_or_insert_default();
-            // A null text is an empty commit: it still replaces the preedit.
+            // A null text is an empty commit; not exclusive with preedit.
             edit.commit = Some(text.clone().unwrap_or_default());
         }
         ZwpTextInputV3Event::DeleteSurroundingText {

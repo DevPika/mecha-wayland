@@ -23,9 +23,11 @@ pub struct InputEdit {
     pub delete_before: u32,
     /// Bytes to delete after the cursor.
     pub delete_after: u32,
-    /// The commit string: it replaces the preedit and lands at the
-    /// cursor. `None` when this done carried no commit, in which case
-    /// the preedit below is shown instead.
+    /// The commit string: it lands at the cursor (after the requested
+    /// surroundings are deleted) and the cursor moves to its end. `None`
+    /// when this done carried no commit. Not exclusive with `preedit`:
+    /// a single `done` may carry both, the commit inserted first, then
+    /// the preedit shown at the new cursor.
     pub commit: Option<String>,
     /// The preedit the input method is composing, shown at the cursor
     /// until a commit replaces it.
@@ -73,8 +75,9 @@ impl Input {
     /// One edit, in the protocol's order: the preedit is replaced by the
     /// cursor (it never was in `string`), the requested surroundings go,
     /// then the commit lands at the cursor with the cursor at its end,
-    /// or the new preedit is shown there. Deletion lengths are bytes,
-    /// clamped to whole characters.
+    /// and the new preedit is shown at the cursor. Commit and preedit
+    /// are not exclusive: one `done` may carry both. Deletion lengths
+    /// are bytes, clamped to whole characters.
     fn apply(&mut self, e: &InputEdit) {
         let start = back(&self.string, self.cursor, e.delete_before);
         let end = forward(&self.string, self.cursor, e.delete_after);
@@ -83,10 +86,10 @@ impl Input {
         if let Some(text) = &e.commit {
             self.string.insert_str(self.cursor, text);
             self.cursor += text.len();
-            self.preedit = None;
-        } else {
-            self.preedit = e.preedit.clone();
         }
+        // The preedit is shown at the cursor; `None` clears any prior
+        // preedit. Applied after the commit, per the protocol's order.
+        self.preedit = e.preedit.clone();
     }
 }
 
