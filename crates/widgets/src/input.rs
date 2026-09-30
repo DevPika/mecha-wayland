@@ -156,16 +156,16 @@ impl Widget for Input {
         let content = s.spawn(container, text(b.font, "").size(PX));
         // A static 1px caret, sized to the line, positioned over `content`
         // by `sync`'s `set_left`. Absolute so it never enters the flex flow.
+        // Built with no paint: `sync` turns it on when the widget is
+        // focused, so it is invisible until then.
         let line_height = s.resource::<Atlas>().line(b.font, PX).ascent;
         let caret = s.spawn(
             container,
-            div()
-                .style(
-                    LayoutStyle::default()
-                        .absolute()
-                        .size(px(1.0), px(line_height)),
-                )
-                .background(Color::WHITE),
+            div().style(
+                LayoutStyle::default()
+                    .absolute()
+                    .size(px(1.0), px(line_height)),
+            ),
         );
         s.on::<InputEdit>(me, |ctx, e| {
             ctx.me().apply(e);
