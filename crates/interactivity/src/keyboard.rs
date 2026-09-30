@@ -26,6 +26,16 @@ pub struct KeyCode(pub u32);
 /// as a `wl_keyboard.key` event, not as a text-input edit, so consumers
 /// match it directly rather than going through `zwp_text_input_v3`.
 pub const KEY_BACKSPACE: KeyCode = KeyCode(14);
+/// Delete (the key to the right of Backspace on a full keyboard).
+pub const KEY_DELETE: KeyCode = KeyCode(111);
+/// Left arrow.
+pub const KEY_LEFT: KeyCode = KeyCode(105);
+/// Right arrow.
+pub const KEY_RIGHT: KeyCode = KeyCode(106);
+/// Home.
+pub const KEY_HOME: KeyCode = KeyCode(102);
+/// End.
+pub const KEY_END: KeyCode = KeyCode(107);
 
 /// One key's transition this report. Mirrors `wl_keyboard.key`'s state
 /// without naming the protocol.

@@ -416,7 +416,7 @@ fn dispatch_all(app: &mut App, bytes: &[u8], fds: &mut VecDeque<OwnedFd>) -> usi
         // Skipped whole, fds and all, on purpose: an id the table does not
         // know is one the server already `delete_id`'d (ids are freed only
         // there, never on a destructor request), or a server-created id,
-        // of which v0 registers none. Either way the server sends nothing
+        // none of which are registered. Either way the server sends nothing
         // more for it, so a skip here never leaves an fd meant for this
         // message stuck in the queue for the next one.
         if let Some((info, _)) = app.resource::<Wayland>().info(h.sender) {

@@ -1,5 +1,15 @@
 #![forbid(unsafe_code)]
-//! `zwp_text_input_v3`: on-screen-keyboard text into the `Input` widget.
+//! `zwp_text_input_v3`: IME composition into the `Input` widget.
+//!
+//! The protocol half of text input. The other half — control keys
+//! (Backspace, Delete, arrows) from a real or virtual keyboard — lives
+//! in the `Input` widget itself, which handles `KeyPress`/`KeyRepeat`
+//! directly and emits `InputFocus` to tell this crate to report the
+//! change to the IME. This crate only drives the `zwp_text_input_v3`
+//! protocol: `enable`/`disable`/`set_surrounding_text`/`commit` on
+//! focus changes, and accumulating `preedit_string`/
+//! `commit_string`/`delete_surrounding_text` into one `InputEdit` per
+//! `done`.
 //!
 //! # Model
 //!
@@ -74,7 +84,7 @@
 //! ```
 
 use app::prelude::*;
-use interactivity::{KEY_BACKSPACE, KeyPress, KeyboardFocus, Press};
+use interactivity::{KeyboardFocus, Press};
 use wayland::prelude::*;
 use widgets::{Input, InputEdit, InputFocus};
 
@@ -151,7 +161,6 @@ impl Module for TextInputModule {
             .system(on_press)
             .system(on_focus)
             .system(on_edited)
-            .system(on_key_press)
             .system(on_removed);
     }
 }
@@ -341,42 +350,6 @@ fn on_edited(app: &mut App, e: &Emitted<InputEdit>) {
         return;
     };
     report(app, w, ZwpTextInputV3ChangeCause::InputMethod);
-}
-
-/// A control key the input method does not carry: a Backspace from a
-/// virtual keyboard arrives as a `KeyPress`, not as a
-/// `delete_surrounding_text`, so this crate handles it here. Translates
-/// it into the same `InputEdit` the protocol path emits — the byte
-/// length of the character before the cursor as `delete_before` — so the
-/// widget's `apply` and the `on_edited` report-back run unchanged.
-fn on_key_press(app: &mut App, e: &Emitted<KeyPress>) {
-    if e.event.key != KEY_BACKSPACE {
-        return;
-    }
-    let Some(&w) = e.targets.first() else {
-        return;
-    };
-    if app.resource::<TextInput>().focused != Some(w) {
-        return;
-    }
-    let cursor = match app.widget::<Input>(w) {
-        Some(i) => i.cursor(),
-        None => return,
-    };
-    let Some(prev) = app
-        .widget::<Input>(w)
-        .map(|i| i.text())
-        .and_then(|t| t[..cursor].chars().next_back())
-    else {
-        return;
-    };
-    app.emit(
-        InputEdit {
-            delete_before: prev.len_utf8() as u32,
-            ..InputEdit::default()
-        },
-        w,
-    );
 }
 
 /// A focused widget leaving the tree blurs.

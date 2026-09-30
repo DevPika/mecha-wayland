@@ -7,8 +7,9 @@
 //! - The widgets write only `LayoutStyle`, `Measure` and `Paint` —
 //!   columns `layout` and `paint` already register. `widgets` installs
 //!   no `Module`, `Component` or `Resource` of its own. `Input` also
-//!   registers a handler for the `InputEdit` events the `text-input`
-//!   crate emits at it, which does nothing without that crate.
+//!   registers handlers for `InputEdit` (from `text-input`'s
+//!   `zwp_text_input_v3` end) and `KeyPress`/`KeyRepeat` (from the
+//!   keyboard path), which do nothing without those crates installed.
 //! - Using any widget requires the caller to have installed
 //!   `LayoutModule` and `PaintModule` and inserted an `Atlas` resource.
 //! - Mutation after spawn happens through each widget's own `*Context`

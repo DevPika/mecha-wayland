@@ -1,19 +1,28 @@
-//! `Input`: an editable line of text, driven by the `text-input` crate's
-//! protocol end and readable through its context.
+//! `Input`: an editable line of text, driven by two paths that meet
+//! in this widget — `InputEdit` from the `text-input` crate's
+//! `zwp_text_input_v3` end, and `KeyPress`/`KeyRepeat` from the
+//! keyboard path — both readable through its context.
 //!
-//! The widget owns the committed string, the cursor's byte offset in it
-//! and the preedit the input method is composing; what it shows is the
-//! string with the preedit inserted at the cursor. Edits arrive as
-//! [`InputEdit`] events at the node — the `text-input` crate emits one
-//! per `zwp_text_input_v3.done` — and are applied in the order the
-//! protocol prescribes: the preedit replaced by the cursor, the
-//! requested surroundings deleted, then the commit inserted at the
-//! cursor, or the new preedit shown there.
+//! The widget owns the committed string, the cursor's byte offset in
+//! it, and the preedit the input method is composing; what it shows is
+//! the string with the preedit inserted at the cursor. IME edits arrive
+//! as [`InputEdit`] events — one per `zwp_text_input_v3.done` — and are
+//! applied in the order the protocol prescribes: the preedit replaced
+//! by the cursor, the requested surroundings deleted, then the commit
+//! inserted at the cursor, or the new preedit shown there. Control keys
+//! (Backspace, Delete, arrows, Home, End) arrive as [`KeyPress`]/
+//! [`KeyRepeat`] and edit the string and cursor directly. After any
+//! keyboard edit the widget emits [`InputFocus { focused: true }`] at
+//! itself, which the `text-input` crate turns into a surrounding-text
+//! report with `Other` as the cause — keeping the IME's picture of the
+//! text true across edits from either path.
 
 use app::{Build, Context, Event, Handle, Widget};
 use atlas::{Atlas, FontId};
 use geometry::Color;
-use interactivity::Press;
+use interactivity::{
+    KEY_BACKSPACE, KEY_DELETE, KEY_END, KEY_HOME, KEY_LEFT, KEY_RIGHT, KeyPress, KeyRepeat, Press,
+};
 use layout::{Layout, LayoutStyle, StyleContext, px};
 use paint::{Paint, PaintContext, Quad};
 
@@ -112,6 +121,63 @@ impl Input {
         // preedit. Applied after the commit, per the protocol's order.
         self.preedit = e.preedit.clone();
     }
+
+    /// One control key from `KeyPress`/`KeyRepeat`: Backspace deletes the
+    /// character before the cursor, Delete the one after, Left/Right
+    /// move the cursor one character, Home/End jump to the ends. Other
+    /// keys are a no-op. Returns `true` when the string or cursor
+    /// changed. The preedit is cleared on any change — a keyboard edit
+    /// is independent of the IME's composition.
+    fn edit_key(&mut self, key: interactivity::KeyCode) -> bool {
+        let cursor = self.cursor;
+        match key {
+            KEY_BACKSPACE if cursor > 0 => {
+                let start = back(&self.string, cursor, 1);
+                self.string.drain(start..cursor);
+                self.cursor = start;
+                self.preedit = None;
+                true
+            }
+            KEY_DELETE if cursor < self.string.len() => {
+                let end = forward(&self.string, cursor, 1);
+                self.string.drain(cursor..end);
+                self.preedit = None;
+                true
+            }
+            KEY_LEFT if cursor > 0 => {
+                self.cursor = back(&self.string, cursor, 1);
+                self.preedit = None;
+                true
+            }
+            KEY_RIGHT if cursor < self.string.len() => {
+                self.cursor = forward(&self.string, cursor, 1);
+                self.preedit = None;
+                true
+            }
+            KEY_HOME if cursor != 0 => {
+                self.cursor = 0;
+                self.preedit = None;
+                true
+            }
+            KEY_END if cursor != self.string.len() => {
+                self.cursor = self.string.len();
+                self.preedit = None;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+/// A control key arrived: apply it, push the display, and tell the
+/// `text-input` crate the text changed by emitting `InputFocus` — the
+/// same signal a press-driven cursor move sends, which `on_focus`
+/// turns into a surrounding-text report with `Other` as the cause.
+fn on_key(ctx: &mut Context<'_, Input>, key: interactivity::KeyCode) {
+    if ctx.me().edit_key(key) {
+        sync(ctx);
+        ctx.emit(InputFocus { focused: true }, ctx.handle());
+    }
 }
 
 /// `n` bytes below `index`, never splitting a character.
@@ -172,6 +238,8 @@ impl Widget for Input {
             ctx.me().apply(e);
             sync(ctx);
         });
+        s.on::<KeyPress>(me, |ctx, e| on_key(ctx, e.key));
+        s.on::<KeyRepeat>(me, |ctx, e| on_key(ctx, e.key));
         s.on::<InputFocus>(me, |ctx, e| {
             ctx.me().focused = e.focused;
             sync(ctx);
