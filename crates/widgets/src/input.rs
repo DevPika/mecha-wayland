@@ -13,6 +13,7 @@
 use app::{Build, Context, Event, Handle, Widget};
 use atlas::{Atlas, FontId};
 use geometry::Color;
+use interactivity::Press;
 use layout::{LayoutStyle, StyleContext, px};
 use paint::{Paint, PaintContext, Quad};
 
@@ -174,6 +175,13 @@ impl Widget for Input {
         s.on::<InputFocus>(me, |ctx, e| {
             ctx.me().focused = e.focused;
             sync(ctx);
+        });
+        // A press on this widget is what focuses it: emit the focus
+        // request at ourselves, and let the `text-input` crate's
+        // `Emitted<InputFocus>` handler drive the protocol. This keeps
+        // press detection in the widget — no tree walk per press.
+        s.on::<Press>(me, |ctx, _| {
+            ctx.emit(InputFocus { focused: true }, ctx.handle());
         });
         Input {
             content,

@@ -7,15 +7,18 @@
 //!   `zwp_text_input_v3` for the seat. Installs after `RingModule`,
 //!   `WaylandModule` (which must have bound `WlSeat`) and
 //!   `InteractivityModule`.
-//! - Focus follows the press: a `Press` whose hit-set holds an `Input`
-//!   widget focuses it — a committed `enable` carrying the widget's text
-//!   as the surrounding text — and a `Press` that lands on no input
-//!   blurs the focused one with a committed `disable`. The surface focus
-//!   the `Enter`/`Leave` events carry is the compositor's business: a
-//!   `Leave` only resets (the compositor ignores our requests until the
-//!   next `Enter` anyway) — and, not being double-buffered, clears the
-//!   widget's preedit immediately — and that `Enter` re-enables for
-//!   whichever widget is still focused.
+//! - Focus follows the press, but the press is detected *in the
+//!   widget*: an `Input` whose `Press` handler runs emits an
+//!   `InputFocus { focused: true }` at itself, which this crate's
+//!   `Emitted<InputFocus>` system turns into a committed `enable`
+//!   carrying the widget's text as the surrounding text. A `Press` that
+//!   misses the focused widget — by a cheap id check against the press
+//!   targets, no per-press tree walk — blurs it with a committed
+//!   `disable`. The surface focus the `Enter`/`Leave` events carry is
+//!   the compositor's business: a `Leave` only resets (the compositor
+//!   ignores our requests until the next `Enter` anyway) — and, not
+//!   being double-buffered, clears the widget's preedit immediately —
+//!   and that `Enter` re-enables for whichever widget is still focused.
 //! - An edit is everything one `done` carries. The `preedit_string`,
 //!   `commit_string` and `delete_surrounding_text` events since the last
 //!   `done` accumulate in [`TextInput`]; the `done` emits one
@@ -146,6 +149,7 @@ impl Module for TextInputModule {
         });
         app.system(on_text_input)
             .system(on_press)
+            .system(on_focus)
             .system(on_edited)
             .system(on_removed);
     }
@@ -154,62 +158,44 @@ impl Module for TextInputModule {
 /// Focus `w`: the committed `enable` for it, with its text as the
 /// surrounding text. A different widget already enabled is disabled
 /// first, as the protocol asks. Before an `Enter` the flags are all the
-/// request can set: the `Enter` that follows runs this again.
+/// request can set: the `Enter` that follows runs this again. Protocol
+/// only — the caret toggle is the widget's own `InputFocus` handler,
+/// driven by the emits the press path and `on_focus` produce.
 fn focus(app: &mut App, w: NodeId) {
     let (text, cursor) = match app.widget::<Input>(w) {
         Some(i) => (i.text().to_string(), i.cursor()),
         None => (String::new(), 0),
     };
-    let prev = app.resource::<TextInput>().focused;
-    {
-        let (mut ti, mut wl) = app.query::<(ResMut<TextInput>, ResMut<Wayland>)>();
-        let ti = &mut *ti;
-        if ti.enabled {
-            ti.input.disable(&mut wl);
-            ti.input.commit(&mut wl);
-            ti.enabled = false;
-        }
-        ti.focused = Some(w);
-        ti.pending = None;
-        if ti.entered && !ti.enabled {
-            ti.input.enable(&mut wl);
-            let (text, cursor) = cap(&text, cursor);
-            ti.input
-                .set_surrounding_text(&mut wl, &text, cursor as i32, cursor as i32);
-            ti.input.commit(&mut wl);
-            ti.enabled = true;
-        }
+    let (mut ti, mut wl) = app.query::<(ResMut<TextInput>, ResMut<Wayland>)>();
+    let ti = &mut *ti;
+    if ti.enabled {
+        ti.input.disable(&mut wl);
+        ti.input.commit(&mut wl);
+        ti.enabled = false;
     }
-    // Tell the widgets: the old one loses the caret, the new one gains it.
-    if let Some(prev) = prev {
-        if prev != w {
-            app.emit(InputFocus { focused: false }, prev);
-        }
+    ti.focused = Some(w);
+    ti.pending = None;
+    if ti.entered && !ti.enabled {
+        ti.input.enable(&mut wl);
+        let (text, cursor) = cap(&text, cursor);
+        ti.input
+            .set_surrounding_text(&mut wl, &text, cursor as i32, cursor as i32);
+        ti.input.commit(&mut wl);
+        ti.enabled = true;
     }
-    app.emit(InputFocus { focused: true }, w);
 }
 
-/// Blur: the committed `disable`, and no focused widget.
+/// Blur: the committed `disable`, and no focused widget. Protocol only.
 fn blur(app: &mut App) {
-    let prev = {
-        let (mut ti, mut wl) = app.query::<(ResMut<TextInput>, ResMut<Wayland>)>();
-        let ti = &mut *ti;
-        if ti.enabled {
-            ti.input.disable(&mut wl);
-            ti.input.commit(&mut wl);
-        }
-        ti.enabled = false;
-        ti.focused.take()
-        // `pending` is cleared below, after the query borrow ends.
-    };
-    {
-        let mut ti = app.resource_mut::<TextInput>();
-        ti.pending = None;
+    let (mut ti, mut wl) = app.query::<(ResMut<TextInput>, ResMut<Wayland>)>();
+    let ti = &mut *ti;
+    if ti.enabled {
+        ti.input.disable(&mut wl);
+        ti.input.commit(&mut wl);
     }
-    // Tell the widget its caret is gone.
-    if let Some(prev) = prev {
-        app.emit(InputFocus { focused: false }, prev);
-    }
+    ti.enabled = false;
+    ti.focused = None;
+    ti.pending = None;
 }
 
 /// The surrounding text is capped at 4000 bytes by the protocol; keep
@@ -225,23 +211,35 @@ fn cap(text: &str, cursor: usize) -> (String, usize) {
     (text[start..].to_string(), cursor.saturating_sub(start))
 }
 
-/// A press that lands on an input widget focuses it; one that lands on
-/// none blurs the focused widget — the way tapping outside a field ends
-/// its edit on a phone.
+/// A press that misses the focused widget blurs it — the way tapping
+/// outside a field ends its edit on a phone. Focus gain is the widget's
+/// own `Press` handler emitting `InputFocus { focused: true }`; this
+/// system only handles the converse, and by a cheap id check against the
+/// press targets — no per-press tree walk for an `Input`.
 fn on_press(app: &mut App, e: &Emitted<Press>) {
-    let pressed = e
-        .targets
-        .iter()
-        .copied()
-        .find(|&id| app.widget::<Input>(id).is_some());
-    match pressed {
-        Some(w) if app.resource::<TextInput>().focused == Some(w) => {}
-        Some(w) => focus(app, w),
-        None => {
-            if app.resource::<TextInput>().focused.is_some() {
-                blur(app);
-            }
+    let Some(focused) = app.resource::<TextInput>().focused else {
+        return;
+    };
+    if !e.targets.iter().any(|&id| id == focused) {
+        app.emit(InputFocus { focused: false }, focused);
+    }
+}
+
+/// The widget's focus request (from its `Press` handler) or blur (from
+/// `on_press`): drive the protocol — `enable`/`disable`/
+/// `set_surrounding_text`/`commit` — for the change. Idempotent: a
+/// redundant `{ focused: true }` on the already-focused widget, or
+/// `{ focused: false }` on one no longer focused, is a no-op.
+fn on_focus(app: &mut App, e: &Emitted<InputFocus>) {
+    let Some(&w) = e.targets.first() else {
+        return;
+    };
+    if e.event.focused {
+        if app.resource::<TextInput>().focused != Some(w) {
+            focus(app, w);
         }
+    } else if app.resource::<TextInput>().focused == Some(w) {
+        blur(app);
     }
 }
 
