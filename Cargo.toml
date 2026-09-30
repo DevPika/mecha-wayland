@@ -72,6 +72,7 @@ taffy = { version = "0.10.1", default-features = false, features = [
     "flexbox",
     "block_layout",
 ] }
+xkbcommon = "0.9"
 
 [profile.dev]
 debug = 1

@@ -6,7 +6,7 @@ use app::Event;
 use geometry::Point;
 
 use crate::ContactId;
-use crate::keyboard::{KeyCode, Modifiers};
+use crate::keyboard::{KeyMeaning, Modifiers};
 
 /// A contact went down over this node: every node in the fresh hit-set at
 /// the `Pressed` position, deepest-first, window last. Locks in ("captures")
@@ -59,27 +59,27 @@ impl Event for Clicked {}
 
 // ── keyboard ──────────────────────────────────────────────────────────────
 
-/// A key went down on the node holding keyboard focus. Carries the key
-/// and the modifiers in effect at the moment of the press. The event
-/// analog of [`Press`]: one per `KeyboardInput` whose state was
-/// `Pressed`, dispatched at the [`crate::KeyboardFocus`] node.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// A key went down on the node holding keyboard focus. Carries the key's
+/// decoded meaning and the modifiers in effect. The event analog of
+/// [`Press`]: one per `KeyboardInput` whose state was `Pressed`,
+/// dispatched at the [`crate::KeyboardFocus`] node.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyPress {
-    pub key: KeyCode,
+    pub meaning: KeyMeaning,
     pub modifiers: Modifiers,
 }
 /// A held key repeated on the node holding keyboard focus — the event
 /// analog of a repeated press. Carries the same fields as [`KeyPress`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyRepeat {
-    pub key: KeyCode,
+    pub meaning: KeyMeaning,
     pub modifiers: Modifiers,
 }
 /// A key went up on the node holding keyboard focus. Carries the same
 /// fields as [`KeyPress`]. The event analog of [`Release`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyRelease {
-    pub key: KeyCode,
+    pub meaning: KeyMeaning,
     pub modifiers: Modifiers,
 }
 

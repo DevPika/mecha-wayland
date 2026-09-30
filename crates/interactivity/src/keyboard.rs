@@ -16,27 +16,6 @@
 
 use app::{NodeId, Resource, Signal};
 
-/// A key, as `wl_keyboard.key` carries it: a linux evdev keycode. The
-/// protocol's own words are "clients must add 8 to the key event keycode"
-/// to get the xkb keycode; the value here is the raw evdev one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyCode(pub u32);
-
-/// The linux evdev code for Backspace. A control key like this arrives
-/// as a `wl_keyboard.key` event, not as a text-input edit, so consumers
-/// match it directly rather than going through `zwp_text_input_v3`.
-pub const KEY_BACKSPACE: KeyCode = KeyCode(14);
-/// Delete (the key to the right of Backspace on a full keyboard).
-pub const KEY_DELETE: KeyCode = KeyCode(111);
-/// Left arrow.
-pub const KEY_LEFT: KeyCode = KeyCode(105);
-/// Right arrow.
-pub const KEY_RIGHT: KeyCode = KeyCode(106);
-/// Home.
-pub const KEY_HOME: KeyCode = KeyCode(102);
-/// End.
-pub const KEY_END: KeyCode = KeyCode(107);
-
 /// One key's transition this report. Mirrors `wl_keyboard.key`'s state
 /// without naming the protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +23,33 @@ pub enum KeyState {
     Pressed,
     Released,
     Repeated,
+}
+
+/// What a key press means, decoded by the keyboard reducer
+/// (`presentation`) from the raw keymap. Protocol- and xkb-agnostic:
+/// `presentation` maps xkb keysyms to these variants, so `interactivity`
+/// and its consumers never touch xkb directly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyMeaning {
+    /// Printable text to insert at the cursor. Suppressed when control
+    /// modifiers (Ctrl/Alt/Logo) are active — those keys produce
+    /// `None` so a widget can treat them as shortcuts instead.
+    Text(String),
+    Backspace,
+    Delete,
+    Left,
+    Right,
+    Home,
+    End,
+    /// No semantic meaning assigned (modifier keys, function keys,
+    /// shortcuts, etc.). Consumers ignore it.
+    None,
+}
+
+impl Default for KeyMeaning {
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 /// The modifier set in effect. The bit layout passed to [`Modifiers::from_bits`]
@@ -84,10 +90,11 @@ impl Modifiers {
 }
 
 /// One report of keyboard input: `presentation`'s reduction of a
-/// `wl_keyboard.key` event, with the latest modifiers folded in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `wl_keyboard.key` event, with the key decoded to a [`KeyMeaning`],
+/// the key's transition state, and the latest modifiers folded in.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyboardInput {
-    pub key: KeyCode,
+    pub meaning: KeyMeaning,
     pub state: KeyState,
     pub modifiers: Modifiers,
 }

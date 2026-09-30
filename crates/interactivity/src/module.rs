@@ -192,28 +192,11 @@ fn on_keyboard(app: &mut App, input: &KeyboardInput) {
     let Some(node) = app.resource::<KeyboardFocus>().focused() else {
         return;
     };
-    let event = (input.key, input.modifiers);
+    let meaning = input.meaning.clone();
+    let modifiers = input.modifiers;
     match input.state {
-        KeyState::Pressed => app.emit(
-            KeyPress {
-                key: event.0,
-                modifiers: event.1,
-            },
-            node,
-        ),
-        KeyState::Repeated => app.emit(
-            KeyRepeat {
-                key: event.0,
-                modifiers: event.1,
-            },
-            node,
-        ),
-        KeyState::Released => app.emit(
-            KeyRelease {
-                key: event.0,
-                modifiers: event.1,
-            },
-            node,
-        ),
+        KeyState::Pressed => app.emit(KeyPress { meaning, modifiers }, node),
+        KeyState::Repeated => app.emit(KeyRepeat { meaning, modifiers }, node),
+        KeyState::Released => app.emit(KeyRelease { meaning, modifiers }, node),
     }
 }

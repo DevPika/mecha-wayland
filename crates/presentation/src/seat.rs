@@ -12,9 +12,10 @@ use std::collections::HashMap;
 use app::prelude::*;
 use geometry::Point;
 use interactivity::{
-    ContactId, ContactInput, ContactPhase, KeyCode, KeyState, KeyboardInput, Modifiers,
+    ContactId, ContactInput, ContactPhase, KeyMeaning, KeyState, KeyboardInput, Modifiers,
 };
 use wayland::prelude::*;
+use xkbcommon::xkb;
 
 use crate::Surfaces;
 
@@ -23,6 +24,9 @@ pub(crate) struct Seat {
     pointer: Option<WlPointer>,
     touch: Option<WlTouch>,
     keyboard: Option<WlKeyboard>,
+    /// The xkb context, keymap and state for decoding `wl_keyboard.key`
+    /// events into [`KeyMeaning`]. `None` until a `Keymap` event arrives.
+    xkb: Option<Xkb>,
     /// The modifier set from the latest `wl_keyboard.modifiers`, folded
     /// into every `KeyboardInput` this seat signals. The two events
     /// arrive on separate `wl_keyboard` events and are joined here, at
@@ -37,6 +41,15 @@ pub(crate) struct Seat {
 }
 impl Resource for Seat {}
 
+/// The xkb state for one keyboard: the context (shared, owns include
+/// paths), the compiled keymap, and the mutable state updated on each
+/// key and modifier event. `!Send`/`!Sync` — the app is single-threaded.
+struct Xkb {
+    _ctx: xkb::Context,
+    _keymap: xkb::Keymap,
+    state: xkb::State,
+}
+
 impl Seat {
     pub(crate) fn new(seat: WlSeat) -> Seat {
         Seat {
@@ -44,6 +57,7 @@ impl Seat {
             pointer: None,
             touch: None,
             keyboard: None,
+            xkb: None,
             modifiers: Modifiers::default(),
             pointer_focus: None,
             touches: HashMap::new(),
@@ -217,38 +231,134 @@ pub(crate) fn on_touch(app: &mut App, e: &WlTouchEvent) {
     }
 }
 
-/// `wl_keyboard` reduced to `interactivity::KeyboardInput`. The only
-/// event that becomes a signal is `Key`; `Modifiers` is folded in from
-/// the latest report stored on [`Seat`]. `Keymap`, `Enter`, `Leave` and
-/// `RepeatInfo` are read and dropped: this matches raw evdev keycodes,
-/// so the keymap fd is not memory-mapped, and keyboard focus is the
-/// `interactivity` crate's concern, surfaced as `KeyboardFocus`.
+/// `wl_keyboard` reduced to `interactivity::KeyboardInput`. The keymap
+/// event loads the xkb keymap (read from the fd as a string, compiled
+/// safely — `new_from_fd` is `unsafe` and this crate forbids unsafe);
+/// modifier events update the xkb state's modifier mask and the
+/// `Modifiers` struct folded into each report; key events decode the
+/// keycode through xkb into a `KeyMeaning` and signal it.
+/// `Enter`/`Leave`/`RepeatInfo` are read and dropped: keyboard focus is
+/// the `interactivity` crate's concern, surfaced as `KeyboardFocus`.
 pub(crate) fn on_keyboard(app: &mut App, e: &WlKeyboardEvent) {
     match e {
-        WlKeyboardEvent::Key { key, state, .. } => {
-            let modifiers = app.resource::<Seat>().modifiers;
-            let state = match state {
-                WlKeyboardKeyState::Pressed => KeyState::Pressed,
-                WlKeyboardKeyState::Released => KeyState::Released,
-                WlKeyboardKeyState::Repeated => KeyState::Repeated,
-            };
-            app.signal(KeyboardInput {
-                key: KeyCode(*key),
-                state,
-                modifiers,
-            });
+        WlKeyboardEvent::Keymap {
+            fd, format, size, ..
+        } => {
+            // `new_from_fd` is unsafe (mmap); read the fd to a string and
+            // compile with the safe `new_from_string`. Only `xkb_v1` is
+            // handled; `no_keymap` leaves xkb unset.
+            if *format == WlKeyboardKeymapFormat::XkbV1 {
+                let mut file = std::fs::File::from(fd.try_clone().expect("dup the keymap fd"));
+                let mut buf = vec![0u8; *size as usize];
+                use std::io::Read;
+                if file.read_exact(&mut buf).is_ok() {
+                    if let Ok(string) = String::from_utf8(buf) {
+                        let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
+                        if let Some(keymap) = xkb::Keymap::new_from_string(
+                            &ctx,
+                            string,
+                            xkb::KEYMAP_FORMAT_TEXT_V1,
+                            xkb::KEYMAP_COMPILE_NO_FLAGS,
+                        ) {
+                            let state = xkb::State::new(&keymap);
+                            app.resource_mut::<Seat>().xkb = Some(Xkb {
+                                _ctx: ctx,
+                                _keymap: keymap,
+                                state,
+                            });
+                        }
+                    }
+                }
+            }
         }
         WlKeyboardEvent::Modifiers {
             mods_depressed,
             mods_latched,
             mods_locked,
+            group,
             ..
         } => {
-            app.resource_mut::<Seat>().modifiers =
-                Modifiers::from_bits(*mods_depressed | *mods_latched | *mods_locked);
+            let mut seat = app.resource_mut::<Seat>();
+            let combined = *mods_depressed | *mods_latched | *mods_locked;
+            seat.modifiers = Modifiers::from_bits(combined);
+            if let Some(xkb) = seat.xkb.as_mut() {
+                xkb.state
+                    .update_mask(*mods_depressed, *mods_latched, *mods_locked, 0, 0, *group);
+            }
         }
-        // `Keymap` (an fd to mmap), `Enter`/`Leave` (compositor surface
-        // focus) and `RepeatInfo` have nowhere to go.
+        WlKeyboardEvent::Key { key, state, .. } => {
+            let (meaning, modifiers) = {
+                let seat = app.resource::<Seat>();
+                let modifiers = seat.modifiers;
+                let meaning = decode(&seat, *key);
+                (meaning, modifiers)
+            };
+            let state = match state {
+                WlKeyboardKeyState::Pressed => KeyState::Pressed,
+                WlKeyboardKeyState::Released => KeyState::Released,
+                WlKeyboardKeyState::Repeated => KeyState::Repeated,
+            };
+            // Update the xkb state after decoding, so the keysym reported
+            // for this event is not affected by the event itself (per
+            // xkb docs). Only on press/release — repeats carry no state
+            // change.
+            if matches!(state, KeyState::Pressed | KeyState::Released) {
+                if let Some(xkb) = app.resource_mut::<Seat>().xkb.as_mut() {
+                    let keycode = xkb::Keycode::new(*key + 8);
+                    let dir = if state == KeyState::Pressed {
+                        xkb::KeyDirection::Down
+                    } else {
+                        xkb::KeyDirection::Up
+                    };
+                    xkb.state.update_key(keycode, dir);
+                }
+            }
+            app.signal(KeyboardInput {
+                meaning,
+                state,
+                modifiers,
+            });
+        }
+        // `Enter`/`Leave` (compositor surface focus) and `RepeatInfo`
+        // have nowhere to go.
         _ => {}
+    }
+}
+
+/// Decode one raw evdev keycode into a [`KeyMeaning`] through the xkb
+/// state. Control modifiers (Ctrl/Alt/Logo) suppress text insertion —
+/// those keys produce `None` so a widget can treat them as shortcuts
+/// instead. Shift and caps/num lock are already folded into the keysym
+/// and utf8 by xkb's level resolution.
+fn decode(seat: &Seat, key: u32) -> KeyMeaning {
+    let Some(xkb) = seat.xkb.as_ref() else {
+        return KeyMeaning::None;
+    };
+    let keycode = xkb::Keycode::new(key + 8);
+    let sym = xkb.state.key_get_one_sym(keycode).raw();
+    use xkb::keysyms::*;
+    if sym == KEY_BackSpace {
+        KeyMeaning::Backspace
+    } else if sym == KEY_Delete {
+        KeyMeaning::Delete
+    } else if sym == KEY_Left {
+        KeyMeaning::Left
+    } else if sym == KEY_Right {
+        KeyMeaning::Right
+    } else if sym == KEY_Home {
+        KeyMeaning::Home
+    } else if sym == KEY_End {
+        KeyMeaning::End
+    } else {
+        // Control modifiers suppress text: Ctrl+C is "copy", not 'c'.
+        if seat.modifiers.ctrl || seat.modifiers.alt || seat.modifiers.logo {
+            return KeyMeaning::None;
+        }
+        let text = xkb.state.key_get_utf8(keycode);
+        if text.is_empty() {
+            KeyMeaning::None
+        } else {
+            KeyMeaning::Text(text)
+        }
     }
 }

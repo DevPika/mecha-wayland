@@ -94,16 +94,13 @@ mod module;
 pub use contact::{ContactId, ContactInput, ContactPhase};
 pub use contacts::Contacts;
 pub use events::{Clicked, Enter, Exit, KeyPress, KeyRelease, KeyRepeat, Press, Release};
-pub use keyboard::{
-    KEY_BACKSPACE, KEY_DELETE, KEY_END, KEY_HOME, KEY_LEFT, KEY_RIGHT, KeyCode, KeyState,
-    KeyboardFocus, KeyboardInput, Modifiers,
-};
+pub use keyboard::{KeyMeaning, KeyState, KeyboardFocus, KeyboardInput, Modifiers};
 pub use module::InteractivityModule;
 
 pub mod prelude {
     pub use crate::{
         Clicked, ContactId, ContactInput, ContactPhase, Contacts, Enter, Exit, InteractivityModule,
-        KEY_BACKSPACE, KEY_DELETE, KEY_END, KEY_HOME, KEY_LEFT, KEY_RIGHT, KeyCode, KeyPress,
-        KeyRelease, KeyRepeat, KeyState, KeyboardFocus, KeyboardInput, Modifiers, Press, Release,
+        KeyMeaning, KeyPress, KeyRelease, KeyRepeat, KeyState, KeyboardFocus, KeyboardInput,
+        Modifiers, Press, Release,
     };
 }
