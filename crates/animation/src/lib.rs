@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Duration-based transitions from Taffy's [`ComputedLayout`] to displayed [`Layout`].
+//! Duration- or speed-based transitions from Taffy's [`ComputedLayout`] to displayed [`Layout`].
 //!
 //! Install after `LayoutModule` and `WindowModule`, and before `RenderModule`.
 //! Installation sets `LayoutControl::externally_driven` automatically. This
@@ -56,12 +56,20 @@ pub mod prelude {
     pub use crate::{AnimationModule, AnimationSettings, AnimationTime, Time};
 }
 
-/// How long a transition takes. Currently only a fixed duration is supported.
+/// How a transition's duration is determined.
 #[derive(Debug, Clone, Copy)]
 pub enum AnimationTime {
     /// Elapsed monotonic time from a transition's start to its exact target.
     /// Zero means copy immediately rather than start a transition.
     Duration(Duration),
+    /// Nominal logical pixels per second, finite and strictly positive.
+    ///
+    /// Duration is the largest absolute change among position, size, padding,
+    /// and border fields divided by this speed. All fields share that duration;
+    /// diagonal position changes use the largest axis change, not path length.
+    /// Easing still applies, so only linear easing gives constant field rates.
+    /// Durations beyond the representable range saturate at `Duration::MAX`.
+    Speed(f32),
 }
 
 /// A node's optional explicit animation configuration.
@@ -80,12 +88,17 @@ pub struct AnimationSettings(Option<Settings>);
 impl Component for AnimationSettings {}
 
 impl AnimationSettings {
-    /// Set this node's duration and easing, overriding inherited settings.
+    /// Set this node's timing and easing, overriding inherited settings.
     ///
     /// `easing` accepts normalized elapsed time and returns the interpolation
     /// amount. Its output is not clamped, allowing overshoot. At completion,
     /// the exact target is assigned regardless of the easing function.
     /// Functions and noncapturing closures can be supplied.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a speed is zero, negative, or nonfinite. Use zero duration to
+    /// disable animation rather than zero speed.
     ///
     /// ```
     /// use animation::{AnimationSettings, AnimationTime};
@@ -97,17 +110,21 @@ impl AnimationSettings {
     /// );
     /// ```
     pub fn new(time: AnimationTime, easing: fn(f32) -> f32) -> Self {
-        let AnimationTime::Duration(duration) = time;
-        Self(Some(Settings { duration, easing }))
+        if let AnimationTime::Speed(speed) = time {
+            assert!(
+                speed.is_finite() && speed > 0.0,
+                "animation speed must be finite and strictly positive"
+            );
+        }
+        Self(Some(Settings { time, easing }))
     }
 }
-// impl Default for AnimationSettings
 
-/// Concrete configuration with no inheritance state. Copied into a running
-/// transition so its timing and easing stay fixed until it ends or is replaced.
+/// Concrete configuration with no inheritance state. A running transition
+/// captures its resolved duration and easing until it ends or is replaced.
 #[derive(Debug, Clone, Copy)]
 struct Settings {
-    duration: Duration,
+    time: AnimationTime,
     easing: fn(f32) -> f32,
 }
 
@@ -125,7 +142,8 @@ struct Running {
     from: Layout,
     target: Layout,
     started: Instant,
-    settings: Settings,
+    duration: Duration,
+    easing: fn(f32) -> f32,
 }
 
 /// Installs the clock, settings and transition components, and animation systems.
@@ -161,6 +179,9 @@ fn settings(app: &App, id: NodeId) -> Option<Settings> {
         .chain(app.ancestors(id))
         .find_map(|node| app.component::<AnimationSettings>(node)?.0)
 }
+// TODO: maybe remove that ^ function ? Surely there's a better function to
+// write, there's only one use for this, and we shouldn't need to further
+// filter the output.
 
 /// Reconcile resolved targets with displayed layouts; do not advance time here.
 ///
@@ -180,7 +201,7 @@ fn settings(app: &App, id: NodeId) -> Option<Settings> {
 ///
 /// The signal's dirty-root list is deliberately unused: settings can change
 /// without any layout recomputation, and active animations still need frames
-/// on clean ticks. Positive duration/easing changes alone do not replace a
+/// on clean ticks. Positive timing/easing changes alone do not replace a
 /// running transition; it keeps its captured settings until its target changes.
 fn on_layout_done(app: &mut App, _: &LayoutDone) {
     let now = app.resource::<Time>().now();
@@ -192,7 +213,9 @@ fn on_layout_done(app: &mut App, _: &LayoutDone) {
         let target = Layout::from(*app.component::<ComputedLayout>(id).unwrap());
         let window = app.component::<InWindow>(id).unwrap().0;
         let configuration = settings(app, id).filter(|s| {
-            !s.duration.is_zero() && window.is_some() && !app.component::<LayoutRoot>(id).unwrap().0
+            !matches!(s.time, AnimationTime::Duration(d) if d.is_zero())
+                && window.is_some()
+                && !app.component::<LayoutRoot>(id).unwrap().0
         });
         let Some(configuration) = configuration else {
             let changed = app.component_mut::<Layout>(id).unwrap().set_if_neq(target);
@@ -213,11 +236,36 @@ fn on_layout_done(app: &mut App, _: &LayoutDone) {
         if transition.0.as_ref().is_some_and(|t| t.target == target) {
             // Keep the original start and clock across clean layout passes.
         } else if current != target {
+            let duration = match configuration.time {
+                AnimationTime::Duration(duration) => duration,
+                AnimationTime::Speed(speed) => {
+                    let distance = [
+                        (current.rect.x(), target.rect.x()),
+                        (current.rect.y(), target.rect.y()),
+                        (current.rect.width(), target.rect.width()),
+                        (current.rect.height(), target.rect.height()),
+                        (current.padding.top, target.padding.top),
+                        (current.padding.right, target.padding.right),
+                        (current.padding.bottom, target.padding.bottom),
+                        (current.padding.left, target.padding.left),
+                        (current.border.top, target.border.top),
+                        (current.border.right, target.border.right),
+                        (current.border.bottom, target.border.bottom),
+                        (current.border.left, target.border.left),
+                    ]
+                    .into_iter()
+                    .map(|(from, to)| (f64::from(to) - f64::from(from)).abs())
+                    .fold(0.0, f64::max);
+                    Duration::try_from_secs_f64(distance / f64::from(speed))
+                        .unwrap_or(Duration::MAX)
+                }
+            };
             transition.0 = Some(Running {
                 from: current,
                 target,
                 started: now,
-                settings: configuration,
+                duration,
+                easing: configuration.easing,
             });
         } else {
             transition.0 = None;
@@ -257,16 +305,12 @@ fn advance(app: &mut App, window: NodeId, now: Instant) {
             continue; // skip everything that doesn't have a currently running animation
         };
         let elapsed = now.duration_since(running.started);
-        let finished = elapsed >= running.settings.duration;
+        let finished = elapsed >= running.duration;
         let value = if finished {
             running.target
         } else {
-            let progress = elapsed.as_secs_f32() / running.settings.duration.as_secs_f32();
-            interpolate(
-                running.from,
-                running.target,
-                (running.settings.easing)(progress),
-            )
+            let progress = elapsed.as_secs_f32() / running.duration.as_secs_f32();
+            interpolate(running.from, running.target, (running.easing)(progress))
         };
         layouts.get_mut(id).unwrap().set_if_neq(value); // set the layout here
         if finished {
