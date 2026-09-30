@@ -32,7 +32,7 @@
 //!   across every edit: a backspace's `delete_surrounding_text` is
 //!   counted from what we last reported.
 //! - `language`, `action` and `preedit_hint` events are read and
-//!   dropped: v0 has nowhere to put them. The `done` serial is not
+//!   dropped: nowhere to put them. The `done` serial is not
 //!   checked against our commit count; the surrounding text is resent
 //!   after every edit regardless, which is what a mismatched serial
 //!   asks for anyway.
@@ -74,7 +74,7 @@
 //! ```
 
 use app::prelude::*;
-use interactivity::Press;
+use interactivity::{KEY_BACKSPACE, KeyPress, KeyboardFocus, Press};
 use wayland::prelude::*;
 use widgets::{Input, InputEdit, InputFocus};
 
@@ -86,7 +86,7 @@ pub mod prelude {
 const SURROUNDING_MAX: usize = 4000;
 
 /// The seat's text input: the `zwp_text_input_v3` object and the focus
-/// bookkeeping around it. One per app in v0, for whatever seat
+/// bookkeeping around it. One per app, for whatever seat
 /// `WaylandModule` bound.
 pub struct TextInput {
     input: ZwpTextInputV3,
@@ -151,6 +151,7 @@ impl Module for TextInputModule {
             .system(on_press)
             .system(on_focus)
             .system(on_edited)
+            .system(on_key_press)
             .system(on_removed);
     }
 }
@@ -166,6 +167,7 @@ fn focus(app: &mut App, w: NodeId) {
         Some(i) => (i.text().to_string(), i.cursor()),
         None => (String::new(), 0),
     };
+    app.resource_mut::<KeyboardFocus>().focus(w);
     let (mut ti, mut wl) = app.query::<(ResMut<TextInput>, ResMut<Wayland>)>();
     let ti = &mut *ti;
     if ti.enabled {
@@ -187,6 +189,7 @@ fn focus(app: &mut App, w: NodeId) {
 
 /// Blur: the committed `disable`, and no focused widget. Protocol only.
 fn blur(app: &mut App) {
+    app.resource_mut::<KeyboardFocus>().blur();
     let (mut ti, mut wl) = app.query::<(ResMut<TextInput>, ResMut<Wayland>)>();
     let ti = &mut *ti;
     if ti.enabled {
@@ -326,7 +329,7 @@ fn on_text_input(app: &mut App, e: &ZwpTextInputV3Event) {
                 app.emit(edit.unwrap_or_default(), w);
             }
         }
-        // `action`, `language` and `preedit_hint` have nowhere to go in v0.
+        // `action`, `language` and `preedit_hint` have nowhere to go.
         _ => {}
     }
 }
@@ -338,6 +341,42 @@ fn on_edited(app: &mut App, e: &Emitted<InputEdit>) {
         return;
     };
     report(app, w, ZwpTextInputV3ChangeCause::InputMethod);
+}
+
+/// A control key the input method does not carry: a Backspace from a
+/// virtual keyboard arrives as a `KeyPress`, not as a
+/// `delete_surrounding_text`, so this crate handles it here. Translates
+/// it into the same `InputEdit` the protocol path emits — the byte
+/// length of the character before the cursor as `delete_before` — so the
+/// widget's `apply` and the `on_edited` report-back run unchanged.
+fn on_key_press(app: &mut App, e: &Emitted<KeyPress>) {
+    if e.event.key != KEY_BACKSPACE {
+        return;
+    }
+    let Some(&w) = e.targets.first() else {
+        return;
+    };
+    if app.resource::<TextInput>().focused != Some(w) {
+        return;
+    }
+    let cursor = match app.widget::<Input>(w) {
+        Some(i) => i.cursor(),
+        None => return,
+    };
+    let Some(prev) = app
+        .widget::<Input>(w)
+        .map(|i| i.text())
+        .and_then(|t| t[..cursor].chars().next_back())
+    else {
+        return;
+    };
+    app.emit(
+        InputEdit {
+            delete_before: prev.len_utf8() as u32,
+            ..InputEdit::default()
+        },
+        w,
+    );
 }
 
 /// A focused widget leaving the tree blurs.

@@ -1,16 +1,19 @@
-//! The one signal in, driving `Contacts` and emitting the five events.
+//! Pointer, touch and keyboard input in, per-node events out.
 //!
-//! Registered as four systems on the same `ContactInput`, each filtering
-//! on its own phase, rather than one function with a match over all four:
-//! `Moved` is independent hover tracking; `Pressed`, `Released` and
-//! `Cancelled` are one capture lifecycle.
+//! Contact input is four systems on the same `ContactInput`, each
+//! filtering on its own phase, rather than one function with a match
+//! over all four: `Moved` is independent hover tracking; `Pressed`,
+//! `Released` and `Cancelled` are one capture lifecycle. Keyboard input
+//! is one system on `KeyboardInput`, routing to whichever node holds the
+//! keyboard focus.
 
 use app::{App, Module, NodeId};
 
 use crate::contact::{ContactId, ContactInput, ContactPhase};
 use crate::contacts::{Contacts, HitSet};
-use crate::events::{Clicked, Enter, Exit, Press, Release};
+use crate::events::{Clicked, Enter, Exit, KeyPress, KeyRelease, KeyRepeat, Press, Release};
 use crate::hit_test::hit_test;
+use crate::keyboard::{KeyState, KeyboardFocus, KeyboardInput};
 
 /// `presentation` is trusted to know which surface an input came from; a
 /// stale or non-`Window` id here is its bug, not this crate's. `hit_test`
@@ -23,18 +26,21 @@ fn trusted_window(app: &App, window: NodeId) {
     );
 }
 
-/// Registers the `Contacts` resource and the four systems that turn a
-/// `ContactInput` into `Press`/`Release`/`Enter`/`Exit`/`Clicked`.
-/// Installs after `WindowModule`.
+/// Registers the `Contacts` and `KeyboardFocus` resources and the systems
+/// that turn a `ContactInput` into `Press`/`Release`/`Enter`/`Exit`/
+/// `Clicked`, and a `KeyboardInput` into `KeyPress`/`KeyRepeat`/
+/// `KeyRelease`. Installs after `WindowModule`.
 pub struct InteractivityModule;
 
 impl Module for InteractivityModule {
     fn install(self, app: &mut App) {
         app.init_resource::<Contacts>()
+            .init_resource::<KeyboardFocus>()
             .system(on_moved)
             .system(on_pressed)
             .system(on_released)
-            .system(on_cancelled);
+            .system(on_cancelled)
+            .system(on_keyboard);
     }
 }
 
@@ -174,5 +180,40 @@ fn on_cancelled(app: &mut App, input: &ContactInput) {
             },
             &hit[..],
         );
+    }
+}
+
+// ── keyboard ──────────────────────────────────────────────────────────────
+
+/// One report becomes one event at the focused node — the same shape
+/// `ContactInput` takes to `Press`/`Release`. With no focus the report
+/// is dropped: a keyboard with nowhere to go is a no-op.
+fn on_keyboard(app: &mut App, input: &KeyboardInput) {
+    let Some(node) = app.resource::<KeyboardFocus>().focused() else {
+        return;
+    };
+    let event = (input.key, input.modifiers);
+    match input.state {
+        KeyState::Pressed => app.emit(
+            KeyPress {
+                key: event.0,
+                modifiers: event.1,
+            },
+            node,
+        ),
+        KeyState::Repeated => app.emit(
+            KeyRepeat {
+                key: event.0,
+                modifiers: event.1,
+            },
+            node,
+        ),
+        KeyState::Released => app.emit(
+            KeyRelease {
+                key: event.0,
+                modifiers: event.1,
+            },
+            node,
+        ),
     }
 }

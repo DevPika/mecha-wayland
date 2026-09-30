@@ -11,7 +11,9 @@ use std::collections::HashMap;
 
 use app::prelude::*;
 use geometry::Point;
-use interactivity::{ContactId, ContactInput, ContactPhase};
+use interactivity::{
+    ContactId, ContactInput, ContactPhase, KeyCode, KeyState, KeyboardInput, Modifiers,
+};
 use wayland::prelude::*;
 
 use crate::Surfaces;
@@ -20,6 +22,12 @@ pub(crate) struct Seat {
     seat: WlSeat,
     pointer: Option<WlPointer>,
     touch: Option<WlTouch>,
+    keyboard: Option<WlKeyboard>,
+    /// The modifier set from the latest `wl_keyboard.modifiers`, folded
+    /// into every `KeyboardInput` this seat signals. The two events
+    /// arrive on separate `wl_keyboard` events and are joined here, at
+    /// the reducer.
+    modifiers: Modifiers,
     /// The window the pointer last entered, and its position there.
     /// `None` between a `Leave` and the next `Enter`.
     pointer_focus: Option<(NodeId, Point)>,
@@ -35,6 +43,8 @@ impl Seat {
             seat,
             pointer: None,
             touch: None,
+            keyboard: None,
+            modifiers: Modifiers::default(),
             pointer_focus: None,
             touches: HashMap::new(),
         }
@@ -56,6 +66,9 @@ pub(crate) fn on_seat(app: &mut App, e: &WlSeatEvent) {
     }
     if capabilities.contains(WlSeatCapability::TOUCH) && seat.touch.is_none() {
         seat.touch = Some(s.get_touch(&mut wl));
+    }
+    if capabilities.contains(WlSeatCapability::KEYBOARD) && seat.keyboard.is_none() {
+        seat.keyboard = Some(s.get_keyboard(&mut wl));
     }
 }
 
@@ -200,6 +213,42 @@ pub(crate) fn on_touch(app: &mut App, e: &WlTouchEvent) {
                 });
             }
         }
+        _ => {}
+    }
+}
+
+/// `wl_keyboard` reduced to `interactivity::KeyboardInput`. The only
+/// event that becomes a signal is `Key`; `Modifiers` is folded in from
+/// the latest report stored on [`Seat`]. `Keymap`, `Enter`, `Leave` and
+/// `RepeatInfo` are read and dropped: this matches raw evdev keycodes,
+/// so the keymap fd is not memory-mapped, and keyboard focus is the
+/// `interactivity` crate's concern, surfaced as `KeyboardFocus`.
+pub(crate) fn on_keyboard(app: &mut App, e: &WlKeyboardEvent) {
+    match e {
+        WlKeyboardEvent::Key { key, state, .. } => {
+            let modifiers = app.resource::<Seat>().modifiers;
+            let state = match state {
+                WlKeyboardKeyState::Pressed => KeyState::Pressed,
+                WlKeyboardKeyState::Released => KeyState::Released,
+                WlKeyboardKeyState::Repeated => KeyState::Repeated,
+            };
+            app.signal(KeyboardInput {
+                key: KeyCode(*key),
+                state,
+                modifiers,
+            });
+        }
+        WlKeyboardEvent::Modifiers {
+            mods_depressed,
+            mods_latched,
+            mods_locked,
+            ..
+        } => {
+            app.resource_mut::<Seat>().modifiers =
+                Modifiers::from_bits(*mods_depressed | *mods_latched | *mods_locked);
+        }
+        // `Keymap` (an fd to mmap), `Enter`/`Leave` (compositor surface
+        // focus) and `RepeatInfo` have nowhere to go.
         _ => {}
     }
 }
