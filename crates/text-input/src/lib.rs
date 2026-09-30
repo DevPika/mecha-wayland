@@ -13,8 +13,9 @@
 //!   blurs the focused one with a committed `disable`. The surface focus
 //!   the `Enter`/`Leave` events carry is the compositor's business: a
 //!   `Leave` only resets (the compositor ignores our requests until the
-//!   next `Enter` anyway), and that `Enter` re-enables for whichever
-//!   widget is still focused.
+//!   next `Enter` anyway) — and, not being double-buffered, clears the
+//!   widget's preedit immediately — and that `Enter` re-enables for
+//!   whichever widget is still focused.
 //! - An edit is everything one `done` carries. The `preedit_string`,
 //!   `commit_string` and `delete_surrounding_text` events since the last
 //!   `done` accumulate in [`TextInput`]; the `done` emits one
@@ -240,10 +241,17 @@ fn on_text_input(app: &mut App, e: &ZwpTextInputV3Event) {
             }
         }
         ZwpTextInputV3Event::Leave { .. } => {
-            let mut ti = app.resource_mut::<TextInput>();
-            ti.entered = false;
-            ti.enabled = false;
-            ti.pending = None;
+            let w = {
+                let mut ti = app.resource_mut::<TextInput>();
+                ti.entered = false;
+                ti.enabled = false;
+                ti.pending = None;
+                ti.focused
+            };
+            // `Leave` is not double-buffered: clear the widget's preedit.
+            if let Some(w) = w {
+                app.emit(InputEdit::default(), w);
+            }
         }
         ZwpTextInputV3Event::PreeditString { text, .. } => {
             let mut ti = app.resource_mut::<TextInput>();
