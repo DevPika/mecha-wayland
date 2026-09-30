@@ -271,8 +271,12 @@ fn on_text_input(app: &mut App, e: &ZwpTextInputV3Event) {
                 let mut ti = app.resource_mut::<TextInput>();
                 (ti.focused, ti.pending.take())
             };
-            if let (Some(w), Some(edit)) = (w, edit) {
-                app.emit(edit, w);
+            // A `done` with no accumulated events still must clear any
+            // preedit the widget is showing: a default `InputEdit`
+            // carries no commit and an empty preedit, which `apply`
+            // turns into `self.preedit = None`.
+            if let Some(w) = w {
+                app.emit(edit.unwrap_or_default(), w);
             }
         }
         // `action`, `language` and `preedit_hint` have nowhere to go in v0.
