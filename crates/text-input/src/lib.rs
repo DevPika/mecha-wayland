@@ -227,9 +227,10 @@ fn on_press(app: &mut App, e: &Emitted<Press>) {
 
 /// The widget's focus request (from its `Press` handler) or blur (from
 /// `on_press`): drive the protocol — `enable`/`disable`/
-/// `set_surrounding_text`/`commit` — for the change. Idempotent: a
-/// redundant `{ focused: true }` on the already-focused widget, or
-/// `{ focused: false }` on one no longer focused, is a no-op.
+/// `set_surrounding_text`/`commit` — for the change. A `{ focused: true }`
+/// on the already-focused widget is a cursor move from a press: report
+/// the new cursor back to the IM with `Other` as the cause, so its next
+/// edit lands where the user clicked.
 fn on_focus(app: &mut App, e: &Emitted<InputFocus>) {
     let Some(&w) = e.targets.first() else {
         return;
@@ -237,10 +238,30 @@ fn on_focus(app: &mut App, e: &Emitted<InputFocus>) {
     if e.event.focused {
         if app.resource::<TextInput>().focused != Some(w) {
             focus(app, w);
+        } else {
+            report(app, w, ZwpTextInputV3ChangeCause::Other);
         }
     } else if app.resource::<TextInput>().focused == Some(w) {
         blur(app);
     }
+}
+
+/// Report the widget's current text and cursor back to the IM, with
+/// `cause`, committed. A no-op when not enabled or not entered.
+fn report(app: &mut App, w: NodeId, cause: ZwpTextInputV3ChangeCause) {
+    let (text, cursor) = match app.widget::<Input>(w) {
+        Some(i) => cap(i.text(), i.cursor()),
+        None => return,
+    };
+    let (mut ti, mut wl) = app.query::<(ResMut<TextInput>, ResMut<Wayland>)>();
+    let ti = &mut *ti;
+    if !ti.enabled {
+        return;
+    }
+    ti.input
+        .set_surrounding_text(&mut wl, &text, cursor as i32, cursor as i32);
+    ti.input.set_text_change_cause(&mut wl, cause);
+    ti.input.commit(&mut wl);
 }
 
 /// The protocol's events. The edit events accumulate; `done` hands them
@@ -316,20 +337,7 @@ fn on_edited(app: &mut App, e: &Emitted<InputEdit>) {
     let Some(&w) = e.targets.first() else {
         return;
     };
-    let (text, cursor) = match app.widget::<Input>(w) {
-        Some(i) => cap(i.text(), i.cursor()),
-        None => return,
-    };
-    let (mut ti, mut wl) = app.query::<(ResMut<TextInput>, ResMut<Wayland>)>();
-    let ti = &mut *ti;
-    if !ti.enabled {
-        return;
-    }
-    ti.input
-        .set_surrounding_text(&mut wl, &text, cursor as i32, cursor as i32);
-    ti.input
-        .set_text_change_cause(&mut wl, ZwpTextInputV3ChangeCause::InputMethod);
-    ti.input.commit(&mut wl);
+    report(app, w, ZwpTextInputV3ChangeCause::InputMethod);
 }
 
 /// A focused widget leaving the tree blurs.

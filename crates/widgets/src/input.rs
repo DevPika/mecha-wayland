@@ -14,7 +14,7 @@ use app::{Build, Context, Event, Handle, Widget};
 use atlas::{Atlas, FontId};
 use geometry::Color;
 use interactivity::Press;
-use layout::{LayoutStyle, StyleContext, px};
+use layout::{Layout, LayoutStyle, StyleContext, px};
 use paint::{Paint, PaintContext, Quad};
 
 use crate::{Div, Text, TextContext, div, text};
@@ -176,11 +176,28 @@ impl Widget for Input {
             ctx.me().focused = e.focused;
             sync(ctx);
         });
-        // A press on this widget is what focuses it: emit the focus
-        // request at ourselves, and let the `text-input` crate's
-        // `Emitted<InputFocus>` handler drive the protocol. This keeps
-        // press detection in the widget — no tree walk per press.
-        s.on::<Press>(me, |ctx, _| {
+        // A press on this widget is what focuses it, and where it lands
+        // moves the caret: the press position, in window-local pixels, is
+        // offset against the text content's layout rect to get an x into
+        // the string, hit-tested to the closest glyph boundary. The
+        // `InputFocus { focused: true }` that follows tells the
+        // `text-input` crate to report the new cursor to the IM.
+        s.on::<Press>(me, |ctx, e| {
+            let (content, font, font_px, string) = {
+                let me = ctx.me();
+                (me.content, me.font, me.px, me.string.clone())
+            };
+            let origin = ctx
+                .at(content)
+                .and_then(|c| c.component::<Layout>().map(|l| l.rect.x()))
+                .unwrap_or(0.0);
+            let x = e.position.x - origin;
+            let offset = {
+                let mut atlas = ctx.resource_mut::<Atlas>();
+                crate::text::hit_position(&mut atlas, font, font_px, &string, x)
+            };
+            ctx.me().cursor = offset;
+            sync(ctx);
             ctx.emit(InputFocus { focused: true }, ctx.handle());
         });
         Input {

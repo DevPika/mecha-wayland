@@ -85,6 +85,30 @@ impl Widget for Text {
     }
 }
 
+/// The byte offset of the glyph boundary closest to `x` pixels into
+/// `text`: where a click at `x` lands the cursor. `0` for an empty
+/// string or `x` at or before the first glyph's midpoint; `text.len()`
+/// for `x` past the end. Advances match `shape`'s (no kerning), so the
+/// boundary lines up with a drawn glyph's edge.
+pub fn hit_position(atlas: &mut Atlas, font: FontId, px: u16, text: &str, x: f32) -> usize {
+    let mut pen = 0.0f32;
+    let mut best = 0usize;
+    let mut best_d = x.abs(); // distance from the boundary at pen = 0
+    for (i, ch) in text.char_indices() {
+        let Some((f, id)) = atlas.lookup(&[font], ch) else {
+            continue;
+        };
+        pen += atlas.glyph(f, id, px).advance;
+        let off = i + ch.len_utf8();
+        let d = (pen - x).abs();
+        if d < best_d {
+            best_d = d;
+            best = off;
+        }
+    }
+    best
+}
+
 /// The pen advance of `text` in `font` at `px`: how far the pen moves
 /// left to right, which is the width a `Text` of it reports. A character
 /// missing from the font's cmap contributes no width, and one present
