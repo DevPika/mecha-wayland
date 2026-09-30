@@ -1,7 +1,7 @@
 use super::*;
+use ::paint::prelude::*; // crate root. Why is this even here
 use geometry::Color;
 use layout::prelude::*;
-use paint::prelude::*;
 use render::{RenderModule, Scenes};
 use window::{FrameRequested, WindowModule, window};
 

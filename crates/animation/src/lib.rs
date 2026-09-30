@@ -47,13 +47,15 @@ use geometry::{Insets, Rect};
 use layout::{ComputedLayout, Layout, LayoutControl, LayoutDone, LayoutRoot};
 use window::{Frame, InWindow, RequestFrame};
 
+mod paint;
 mod time;
 
+pub use paint::AnimatedPaint;
 pub use time::Time;
 
 /// The animation types normally imported by a consumer.
 pub mod prelude {
-    pub use crate::{AnimationModule, AnimationSettings, AnimationTime, Time};
+    pub use crate::{AnimatedPaint, AnimationModule, AnimationSettings, AnimationTime, Time};
 }
 
 /// How a transition's duration is determined.
@@ -166,6 +168,8 @@ impl Module for AnimationModule {
             .system::<Frame>(time::update_time)
             .register_component::<AnimationSettings>()
             .register_component::<Transition>()
+            .register_component::<AnimatedPaint>()
+            .system(paint::on_spawned)
             .system(on_layout_done)
             .system(on_frame);
     }
@@ -239,6 +243,9 @@ fn on_layout_done(app: &mut App, _: &LayoutDone) {
             let duration = match configuration.time {
                 AnimationTime::Duration(duration) => duration,
                 AnimationTime::Speed(speed) => {
+
+						  // This just finds the max distance from which the duration
+						  // will be calculated
                     let distance = [
                         (current.rect.x(), target.rect.x()),
                         (current.rect.y(), target.rect.y()),
