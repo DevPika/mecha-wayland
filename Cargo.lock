@@ -22,7 +22,6 @@ dependencies = [
  "geometry",
  "layout",
  "paint",
- "render",
  "window",
 ]
 
@@ -530,6 +529,7 @@ dependencies = [
 name = "presentation"
 version = "0.1.0"
 dependencies = [
+ "animation",
  "app",
  "atlas",
  "geometry",
@@ -586,6 +586,7 @@ dependencies = [
 name = "render"
 version = "0.1.0"
 dependencies = [
+ "animation",
  "app",
  "geometry",
  "layout",

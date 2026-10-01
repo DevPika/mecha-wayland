@@ -69,33 +69,61 @@ impl Widget for Shell {
 			panel.set_width(width);
 		});
 
+		let original = Color::rgb(0.456, 0.30, 0.08);
+		let alternate = Color::rgb(0.10, 0.65, 0.85);
+
 		let panel3 = s.spawn_with(
 			win,
 			Leaf,
 			(
 				AnimationSettings::new(
-					AnimationTime::Duration(Duration::from_millis(1500)),
-					|t| t, // linear easing
+					AnimationTime::Duration(Duration::from_millis(500)),
+					|t| t, // Linear: 150 px / 1.5 s = 100 px/s
 				),
-				LayoutStyle::default().column().size(px(200.0), px(180.0)),
-				Paint::Quad(Quad::new(Color::rgb(0.456, 0.30, 0.08)).radius(12.0)),
-			)
+				LayoutStyle::default()
+					.column()
+					.absolute()
+					.inset(Insets::new(px(410.0), auto(), auto(), px(0.0)))
+					.size(px(200.0), px(180.0)),
+				Paint::Quad(Quad::new(original).radius(12.0)),
+			),
 		);
 
 		s.on::<Clicked>(panel3, move |ctx, _| {
 			let mut panel = ctx.at(panel3).unwrap();
-			// change 
+
+			/*
 			*panel.component_mut::<AnimationSettings>().unwrap() =
 			AnimationSettings::new(
-				AnimationTime::Duration(Duration::from_millis(3000)),
+				AnimationTime::Duration(Duration::from_millis(1500)),
+				|t| t,
+			);
+			*/
+
+			let Paint::Quad(mut quad) = panel.paint().clone() else {
+				return;
+			};
+			quad.color = if quad.color == original {
+				alternate
+			} else {
+				original
+			};
+			panel.set_paint(Paint::Quad(quad));
+
+			/*
+			*panel.component_mut::<AnimationSettings>().unwrap() =
+			AnimationSettings::new(
+				AnimationTime::Speed(800.0),
 				|t| t * t * t,
 			);
-			let width = if panel.style().width == px(440.0) {
-				px(180.0)
+			*/
+
+			let left = if panel.style().inset.left == px(0.0) {
+				px(400.0)
 			} else {
-				px(440.0)
+				px(0.0)
 			};
-			panel.set_width(width);
+			panel.set_left(left);
 		});
 
 		Shell
