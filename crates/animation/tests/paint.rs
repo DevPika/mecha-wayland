@@ -1,13 +1,13 @@
 use std::time::Duration;
 
 use animation::{
-    AnimatedPaint, AnimationModule, AnimationSettings, AnimationTime, PaintTransition,
+    AnimatedPaint, AnimationModule, AnimationSettings, AnimationTime, PaintTransition, Time,
 };
 use app::prelude::*;
-use geometry::Color;
+use geometry::{Color, Corners, Insets};
 use layout::LayoutModule;
 use paint::{Paint, PaintModule, Quad};
-use window::{FrameRequested, WindowModule, window};
+use window::{Frame, FrameRequested, WindowModule, window};
 
 struct Leaf;
 struct Painted(Paint);
@@ -247,4 +247,139 @@ fn inherited_duration_animates_but_explicit_zero_duration_snaps() {
             .is_running()
     );
     assert_eq!(app.component::<AnimatedPaint>(disabled).unwrap().0, target);
+}
+
+#[test]
+fn frame_interpolates_every_numeric_quad_field_with_easing() {
+    let mut app = app();
+    let window = app.spawn(app.root(), window());
+    let duration = Duration::from_secs(60);
+    let panel = app.spawn_with(
+        window,
+        Painted(Paint::Quad(Quad::default())),
+        (AnimationSettings::new(
+            AnimationTime::Duration(duration),
+            |t| t * t,
+        ),),
+    );
+    app.tick();
+    let target = Quad {
+        color: Color::rgba(1.0, 0.5, 0.25, 0.75),
+        radii: Corners::new(20.0, 30.0, 40.0, 50.0),
+        border: Insets::new(2.0, 4.0, 6.0, 8.0),
+        border_color: Color::rgba(0.5, 1.0, 0.25, 0.75),
+        is_opaque: false,
+    };
+    *app.component_mut::<Paint>(panel).unwrap() = Paint::Quad(target);
+    app.tick();
+    let started = app.resource::<Time>().now();
+
+    app.signal(Frame(window.id()));
+    app.flush();
+    let progress = (app.resource::<Time>().now() - started).as_secs_f32() / duration.as_secs_f32();
+    assert!(progress < 1.0);
+    let t = progress * progress;
+    assert_eq!(
+        app.component::<AnimatedPaint>(panel).unwrap().0,
+        Paint::Quad(Quad {
+            color: Color::rgba(t, 0.5 * t, 0.25 * t, 0.75 * t),
+            radii: Corners::new(20.0 * t, 30.0 * t, 40.0 * t, 50.0 * t),
+            border: Insets::new(2.0 * t, 4.0 * t, 6.0 * t, 8.0 * t),
+            border_color: Color::rgba(0.5 * t, t, 0.25 * t, 0.75 * t),
+            is_opaque: false,
+        })
+    );
+    assert!(
+        app.component::<PaintTransition>(panel)
+            .unwrap()
+            .is_running()
+    );
+    assert_eq!(app.component::<Paint>(panel).unwrap(), &Paint::Quad(target));
+}
+
+#[test]
+fn frames_only_advance_their_window_and_completion_writes_the_exact_target() {
+    let mut app = app();
+    let a = app.spawn(app.root(), window());
+    let b = app.spawn(app.root(), window());
+    let initial = Paint::Quad(Quad::new(Color::BLACK));
+    let settings = AnimationSettings::new(AnimationTime::Duration(Duration::from_nanos(1)), |t| {
+        t * 0.5
+    });
+    let first = app.spawn_with(a, Painted(initial.clone()), (settings,));
+    let second = app.spawn_with(b, Painted(initial.clone()), (settings,));
+    app.tick();
+    let target = Paint::Quad(Quad::new(Color::WHITE));
+    *app.component_mut::<Paint>(first).unwrap() = target.clone();
+    *app.component_mut::<Paint>(second).unwrap() = target.clone();
+    app.tick();
+
+    app.signal(Frame(a.id()));
+    app.flush();
+    assert_eq!(app.component::<AnimatedPaint>(first).unwrap().0, target);
+    assert!(
+        !app.component::<PaintTransition>(first)
+            .unwrap()
+            .is_running()
+    );
+    assert_eq!(app.component::<AnimatedPaint>(second).unwrap().0, initial);
+    assert!(
+        app.component::<PaintTransition>(second)
+            .unwrap()
+            .is_running()
+    );
+
+    app.signal(Frame(b.id()));
+    app.flush();
+    assert_eq!(app.component::<AnimatedPaint>(second).unwrap().0, target);
+    assert!(
+        !app.component::<PaintTransition>(second)
+            .unwrap()
+            .is_running()
+    );
+}
+
+#[test]
+fn retargeting_a_quad_starts_from_its_last_displayed_frame() {
+    let mut app = app();
+    let window = app.spawn(app.root(), window());
+    let duration = Duration::from_secs(60);
+    let panel = app.spawn_with(
+        window,
+        Painted(Paint::Quad(Quad::new(Color::BLACK))),
+        (AnimationSettings::new(
+            AnimationTime::Duration(duration),
+            |t| t,
+        ),),
+    );
+    app.tick();
+    *app.component_mut::<Paint>(panel).unwrap() = Paint::Quad(Quad::new(Color::WHITE));
+    app.tick();
+    app.signal(Frame(window.id()));
+    app.flush();
+    let Paint::Quad(shown) = app.component::<AnimatedPaint>(panel).unwrap().0 else {
+        panic!("a quad transition displays a quad");
+    };
+
+    let target = Quad::new(Color::rgb(0.0, 0.0, 1.0));
+    *app.component_mut::<Paint>(panel).unwrap() = Paint::Quad(target);
+    app.tick();
+    let started = app.resource::<Time>().now();
+    app.signal(Frame(window.id()));
+    app.flush();
+    let progress = (app.resource::<Time>().now() - started).as_secs_f32() / duration.as_secs_f32();
+    assert!(progress < 1.0);
+    let lerp = |a: f32, b: f32| a + (b - a) * progress;
+    assert_eq!(
+        app.component::<AnimatedPaint>(panel).unwrap().0,
+        Paint::Quad(Quad {
+            color: Color::rgba(
+                lerp(shown.color.r, target.color.r),
+                lerp(shown.color.g, target.color.g),
+                lerp(shown.color.b, target.color.b),
+                lerp(shown.color.a, target.color.a),
+            ),
+            ..target
+        })
+    );
 }

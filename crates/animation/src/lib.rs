@@ -158,8 +158,8 @@ struct Running {
 ///
 /// The systems sample [`Time`] on [`PostTick`] and [`Frame`], reconcile layout
 /// targets on [`LayoutDone`], and prepare paint transitions when target paint
-/// changes. Layout transitions advance on `Frame`; paint frame advancement is
-/// not installed yet. There is no independent timer or frame-rate loop here.
+/// changes. Both kinds of transitions advance on `Frame` before rendering.
+/// There is no independent timer or frame-rate loop here.
 pub struct AnimationModule;
 impl Module for AnimationModule {
     /// Claim displayed layouts and register the systems in execution order.
@@ -175,7 +175,8 @@ impl Module for AnimationModule {
             .system(paint::on_spawned)
             .system(on_layout_done)
             .system(paint::on_paint_changed)
-            .system(on_frame);
+            .system(on_frame)
+            .system(paint::on_frame);
     }
 }
 
