@@ -5,7 +5,11 @@
 //!
 //! The widget owns the committed string, the cursor's byte offset in
 //! it, and the preedit the input method is composing; what it shows is
-//! the string with the preedit inserted at the cursor. IME edits arrive
+//! the string with the preedit inserted at the cursor. When the
+//! `ContentHint::HIDDENTEXT` hint is set (as for a password field) the
+//! committed characters are drawn as bullets `•` — the preedit stays
+//! verbatim so the IME composition stays readable until it is
+//! committed. IME edits arrive
 //! as [`InputEdit`] events — one per `zwp_text_input_v3.done` — and are
 //! applied in the order the protocol prescribes: the preedit replaced
 //! by the cursor, the requested surroundings deleted, then the commit
@@ -54,7 +58,8 @@ bitflags! {
         const UPPERCASE = 0x10;
         /// Prefer casing for titles and headings (can be language dependent).
         const TITLECASE = 0x20;
-        /// Characters should be hidden (passwords).
+        /// Characters should be hidden — the widget draws each
+        /// committed character as a bullet `•` (see `is_hidden`).
         const HIDDENTEXT = 0x40;
         /// Typed text should not be stored (sensitive input).
         const SENSITIVEDATA = 0x80;
@@ -170,6 +175,11 @@ pub struct Input {
     content_hint: ContentHint,
     /// The primary purpose of this field's text. See `content_hint`.
     content_purpose: ContentPurpose,
+    /// Whether a hidden field (`HIDDENTEXT`) is currently showing its
+    /// real text. `false` (the default) keeps the masking on; a user
+    /// toggling a "show password" button sets it `true` to reveal the
+    /// typed text. Has no effect when `HIDDENTEXT` is not set.
+    unmasked: bool,
 }
 
 impl Input {
@@ -200,15 +210,45 @@ impl Input {
         self.content_purpose
     }
 
+    /// Whether this field is currently masking its committed text —
+    /// each character is drawn as a bullet `•`. Tied to
+    /// `ContentHint::HIDDENTEXT`, the protocol's "characters should be
+    /// hidden" flag, so a password field
+    /// (`.content_hint(ContentHint::HIDDENTEXT | ..)`) masks its text
+    /// while an ordinary field shows it verbatim. The preedit the IME
+    /// is composing is still shown as-is: it is temporary, and the user
+    /// needs to read it until it is committed — at which point it joins
+    /// `string` and is masked like the rest.
+    ///
+    /// Honors `unmasked`: a user-driven "show password" toggle sets
+    /// that flag `true` (via [`InputContext::set_hidden`]) to reveal
+    /// the real text even though the field is, by content hint, hidden.
+    /// The default is `false` (masked).
+    pub fn is_hidden(&self) -> bool {
+        self.content_hint.contains(ContentHint::HIDDENTEXT) && !self.unmasked
+    }
+
     /// What the widget shows: the string with the preedit at the cursor.
+    /// When `is_hidden`, each committed character is replaced by a bullet
+    /// `•`; the preedit is shown verbatim so the IME composition stays
+    /// readable until it is committed.
     fn display(&self) -> String {
-        match &self.preedit {
-            Some(preedit) => format!(
-                "{}{preedit}{}",
-                &self.string[..self.cursor],
-                &self.string[self.cursor..]
-            ),
-            None => self.string.clone(),
+        if self.is_hidden() {
+            let before = mask(&self.string[..self.cursor]);
+            let after = mask(&self.string[self.cursor..]);
+            match &self.preedit {
+                Some(preedit) => format!("{before}{preedit}{after}"),
+                None => format!("{before}{after}"),
+            }
+        } else {
+            match &self.preedit {
+                Some(preedit) => format!(
+                    "{}{preedit}{}",
+                    &self.string[..self.cursor],
+                    &self.string[self.cursor..]
+                ),
+                None => self.string.clone(),
+            }
         }
     }
 
@@ -316,6 +356,30 @@ fn forward(s: &str, index: usize, n: u32) -> usize {
         i += 1;
     }
     i
+}
+
+/// The bullet used to mask hidden characters (U+2022).
+const MASK_CHAR: char = '•';
+
+/// Replace each character of `s` with a bullet `•`, keeping the same
+/// character count so hit-testing and measuring land on the same glyph
+/// grid the displayed text shows. One character in → one bullet out.
+fn mask(s: &str) -> String {
+    s.chars().map(|_| MASK_CHAR).collect()
+}
+
+/// Convert a byte offset into a `mask` of `real` back into a byte
+/// offset into `real`. `mask` replaces each character with one `•`
+/// (3 bytes), so the offset into the masked string is a multiple of
+/// `MASK_CHAR.len_utf8()`; dividing yields the character count, and
+/// the matching byte offset in `real` is the start of that character.
+/// Clamps to `real.len()` for offsets past the end.
+fn unmask_offset(real: &str, masked_offset: usize) -> usize {
+    let char_count = masked_offset / MASK_CHAR.len_utf8();
+    real.char_indices()
+        .nth(char_count)
+        .map(|(i, _)| i)
+        .unwrap_or(real.len())
 }
 
 pub fn input(font: FontId) -> InputBuilder {
@@ -468,18 +532,35 @@ impl Widget for Input {
         // `InputFocus { focused: true }` that follows tells the
         // `text-input` crate to report the new cursor to the IM.
         s.on::<Press>(me, |ctx, e| {
-            let (content, font, font_px, string) = {
+            let (content, font, font_px, string, hidden) = {
                 let me = ctx.me();
-                (me.content, me.font, me.px, me.string.clone())
+                (
+                    me.content,
+                    me.font,
+                    me.px,
+                    me.string.clone(),
+                    me.is_hidden(),
+                )
             };
             let origin = ctx
                 .at(content)
                 .and_then(|c| c.component::<Layout>().map(|l| l.rect.x()))
                 .unwrap_or(0.0);
             let x = e.position.x - origin;
+            // Hit-test against what the user sees: the masked string when
+            // hidden, the real string otherwise. The masked byte offset
+            // is mapped back to the real string's byte offset so the
+            // cursor stays correct in the committed text.
             let offset = {
                 let mut atlas = ctx.resource_mut::<Atlas>();
-                crate::text::hit_position(&mut atlas, font, font_px, &string, x)
+                if hidden {
+                    let masked = mask(&string);
+                    let masked_off =
+                        crate::text::hit_position(&mut atlas, font, font_px, &masked, x);
+                    unmask_offset(&string, masked_off)
+                } else {
+                    crate::text::hit_position(&mut atlas, font, font_px, &string, x)
+                }
             };
             ctx.me().cursor = offset;
             sync(ctx);
@@ -498,6 +579,7 @@ impl Widget for Input {
             focused: false,
             content_hint: b.content_hint,
             content_purpose: b.content_purpose,
+            unmasked: false,
         }
     }
 }
@@ -509,6 +591,15 @@ impl Widget for Input {
 fn sync(ctx: &mut Context<'_, Input>) {
     let (content, caret, font, font_px, caret_color, focused, before_cursor, display) = {
         let me = ctx.me();
+        let hidden = me.is_hidden();
+        // The caret sits over the glyphs before the cursor; when the
+        // field is hidden those glyphs are bullets, so measure the
+        // masked prefix — the real text's widths would misplace it.
+        let before_cursor = if hidden {
+            mask(&me.string[..me.cursor])
+        } else {
+            me.string[..me.cursor].to_string()
+        };
         (
             me.content,
             me.caret,
@@ -516,7 +607,7 @@ fn sync(ctx: &mut Context<'_, Input>) {
             me.px,
             me.caret_color,
             me.focused,
-            me.string[..me.cursor].to_string(),
+            before_cursor,
             me.display(),
         )
     };
@@ -540,6 +631,12 @@ pub trait InputContext {
     /// Replace the content. The cursor moves to the end and any preedit
     /// is dropped.
     fn set_text(&mut self, text: impl Into<String>);
+
+    /// Show or hide the field's text. Only meaningful for a field whose
+    /// `ContentHint` includes `HIDDENTEXT` (a password field): `false`
+    /// (the default) masks each character as `•`, `true` reveals the
+    /// typed text. A no-op for a non-hidden field. Resyncs the display.
+    fn set_hidden(&mut self, hidden: bool);
 }
 
 impl InputContext for Context<'_, Input> {
@@ -548,6 +645,11 @@ impl InputContext for Context<'_, Input> {
         me.string = text.into();
         me.cursor = me.string.len();
         me.preedit = None;
+        sync(self);
+    }
+
+    fn set_hidden(&mut self, hidden: bool) {
+        self.me().unmasked = !hidden;
         sync(self);
     }
 }

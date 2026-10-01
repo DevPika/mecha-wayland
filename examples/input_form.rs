@@ -111,7 +111,10 @@ impl Widget for Form {
         // `.content_purpose(..)` + `.content_hint(..)` mark this as a
         // password field: text-input-v3 gets `Password` purpose with
         // `SENSITIVEDATA | HIDDENTEXT` hints (and without text-input-v3
-        // the widget is driven by plain keyboard events).
+        // the widget is driven by plain keyboard events). The
+        // `HIDDENTEXT` hint also makes the widget draw each committed
+        // character as a bullet `•` — the toggle button below reveals
+        // the typed text via `set_hidden(false)`.
         let password = s.spawn(
             pw_row,
             input(b.font)
@@ -122,6 +125,24 @@ impl Widget for Form {
                 .content_purpose(ContentPurpose::Password)
                 .content_hint(ContentHint::SENSITIVEDATA | ContentHint::HIDDENTEXT),
         );
+        // A "Show"/"Hide" toggle: clicking it flips the password field's
+        // masking and updates its own label. Built inline (a div with a
+        // text child) so the text handle is in hand for the label swap.
+        let toggle = s.spawn(
+            pw_row,
+            div()
+                .style(LayoutStyle::default().center().padding_all(px(6.0)))
+                .background(accent),
+        );
+        let toggle_label = s.spawn(toggle, text(b.font, "Show").size(14).color(field_color));
+        s.on::<Clicked>(toggle, move |ctx, _| {
+            let mut pw = ctx.at(password).unwrap();
+            let was_hidden = pw.me().is_hidden();
+            pw.set_hidden(!was_hidden);
+            ctx.at(toggle_label)
+                .unwrap()
+                .set_text(if was_hidden { "Hide" } else { "Show" });
+        });
 
         let submit = s.spawn(me, button(b.font, "Submit"));
 
