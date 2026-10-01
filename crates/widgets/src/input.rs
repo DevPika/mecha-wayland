@@ -229,7 +229,12 @@ impl Widget for Input {
         s: &mut app::prelude::Spawner<'_, Self>,
     ) -> Self {
         const PX: u16 = 24;
-        let container = s.spawn(me, div());
+        let container = s.spawn(
+            me,
+            div()
+                .border(1.0, Color::rgb(0.5, 0.5, 0.5))
+                .style(LayoutStyle::default().min_width(px(20.0))),
+        );
         let content = s.spawn(container, text(b.font, "").size(PX));
         // A static 1px caret, sized to the line, positioned over `content`
         // by `sync`'s `set_left`. Absolute so it never enters the flex flow.
