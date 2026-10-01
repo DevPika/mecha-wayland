@@ -50,12 +50,14 @@ use window::{Frame, InWindow, RequestFrame};
 mod paint;
 mod time;
 
-pub use paint::AnimatedPaint;
+pub use paint::{AnimatedPaint, PaintTransition};
 pub use time::Time;
 
 /// The animation types normally imported by a consumer.
 pub mod prelude {
-    pub use crate::{AnimatedPaint, AnimationModule, AnimationSettings, AnimationTime, Time};
+    pub use crate::{
+        AnimatedPaint, AnimationModule, AnimationSettings, AnimationTime, PaintTransition, Time,
+    };
 }
 
 /// How a transition's duration is determined.
@@ -169,6 +171,7 @@ impl Module for AnimationModule {
             .register_component::<AnimationSettings>()
             .register_component::<Transition>()
             .register_component::<AnimatedPaint>()
+            .register_component::<PaintTransition>()
             .system(paint::on_spawned)
             .system(on_layout_done)
             .system(on_frame);

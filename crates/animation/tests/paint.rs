@@ -1,4 +1,4 @@
-use animation::{AnimatedPaint, AnimationModule};
+use animation::{AnimatedPaint, AnimationModule, PaintTransition};
 use app::prelude::*;
 use geometry::Color;
 use layout::LayoutModule;
@@ -41,6 +41,7 @@ fn spawned_nodes_copy_their_final_paint_after_build() {
         app.component::<AnimatedPaint>(first),
         Some(&AnimatedPaint(quad))
     );
+    assert!(app.component::<PaintTransition>(first).is_some());
     assert_eq!(
         app.component::<AnimatedPaint>(second),
         Some(&AnimatedPaint(run))
@@ -64,4 +65,5 @@ fn removed_nodes_do_not_leak_displayed_paint_to_reused_slots() {
         app.component::<AnimatedPaint>(replacement),
         Some(&AnimatedPaint(Paint::None))
     );
+    assert!(app.component::<PaintTransition>(replacement).is_some());
 }
