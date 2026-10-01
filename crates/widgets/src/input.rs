@@ -64,6 +64,10 @@ pub struct Input {
     caret: Handle<Div>,
     font: FontId,
     px: u16,
+    /// The caret's colour; the bar is shown in this colour while
+    /// focused. Set at build from `InputBuilder::caret` (which
+    /// defaults to `InputBuilder::color`).
+    caret_color: Color,
     string: String,
     /// The cursor's byte offset in `string`.
     cursor: usize,
@@ -209,11 +213,73 @@ fn forward(s: &str, index: usize, n: u32) -> usize {
 }
 
 pub fn input(font: FontId) -> InputBuilder {
-    InputBuilder { font }
+    InputBuilder {
+        font,
+        px: 16,
+        text: String::new(),
+        // A sensible default so an empty input still has a width; a
+        // caller who passes `.style(..)` replaces it wholesale — the
+        // same "last write wins" rule `DivBuilder::style` follows.
+        style: LayoutStyle::default().min_width(px(20.0)),
+        color: Color::WHITE,
+        caret: Color::WHITE,
+        border: (1.0, Color::rgb(0.5, 0.5, 0.5)),
+        background: None,
+    }
 }
 
 pub struct InputBuilder {
     font: FontId,
+    px: u16,
+    text: String,
+    style: LayoutStyle,
+    color: Color,
+    caret: Color,
+    border: (f32, Color),
+    background: Option<Color>,
+}
+
+impl InputBuilder {
+    /// Font size in pixels; default 16.
+    pub fn size(mut self, px: u16) -> Self {
+        self.px = px;
+        self
+    }
+    /// Initial content; default empty. The cursor starts at the end.
+    pub fn text(mut self, text: impl Into<String>) -> Self {
+        self.text = text.into();
+        self
+    }
+    /// The container's layout style. Replaces the default
+    /// (`min_width(20px)`); a caller who wants a fill-width input with
+    /// a min width writes
+    /// `.style(LayoutStyle::default().fill().min_width(..))`.
+    pub fn style(mut self, style: LayoutStyle) -> Self {
+        self.style = style;
+        self
+    }
+    /// Text colour; default white. Also sets the caret colour unless
+    /// `.caret(..)` is called after.
+    pub fn color(mut self, color: Color) -> Self {
+        self.color = color;
+        self.caret = color;
+        self
+    }
+    /// Caret colour, independent of `.color`; defaults to `.color`.
+    pub fn caret(mut self, color: Color) -> Self {
+        self.caret = color;
+        self
+    }
+    /// Container border width and colour; default `1.0` of mid-grey.
+    pub fn border(mut self, width: f32, color: Color) -> Self {
+        self.border = (width, color);
+        self
+    }
+    /// Container background colour; default transparent.
+    pub fn background(mut self, color: Color) -> Self {
+        self.background = Some(color);
+        self
+    }
 }
 
 impl Build for InputBuilder {
@@ -228,19 +294,20 @@ impl Widget for Input {
         me: app::prelude::Handle<Self>,
         s: &mut app::prelude::Spawner<'_, Self>,
     ) -> Self {
-        const PX: u16 = 24;
-        let container = s.spawn(
-            me,
-            div()
-                .border(1.0, Color::rgb(0.5, 0.5, 0.5))
-                .style(LayoutStyle::default().min_width(px(20.0))),
+        let mut container = div().border(b.border.0, b.border.1).style(b.style);
+        if let Some(bg) = b.background {
+            container = container.background(bg);
+        }
+        let container = s.spawn(me, container);
+        let content = s.spawn(
+            container,
+            text(b.font, b.text.clone()).size(b.px).color(b.color),
         );
-        let content = s.spawn(container, text(b.font, "").size(PX));
         // A static 1px caret, sized to the line, positioned over `content`
         // by `sync`'s `set_left`. Absolute so it never enters the flex flow.
         // Built with no paint: `sync` turns it on when the widget is
         // focused, so it is invisible until then.
-        let line_height = s.resource::<Atlas>().line(b.font, PX).ascent;
+        let line_height = s.resource::<Atlas>().line(b.font, b.px).ascent;
         let caret = s.spawn(
             container,
             div().style(
@@ -283,13 +350,15 @@ impl Widget for Input {
             sync(ctx);
             ctx.emit(InputFocus { focused: true }, ctx.handle());
         });
+        let cursor = b.text.len();
         Input {
             content,
             caret,
             font: b.font,
-            px: PX,
-            string: String::new(),
-            cursor: 0,
+            px: b.px,
+            caret_color: b.caret,
+            string: b.text,
+            cursor,
             preedit: None,
             focused: false,
         }
@@ -301,13 +370,14 @@ impl Widget for Input {
 /// cursor. The caret is hidden (`Paint::None`) when the widget is not
 /// focused.
 fn sync(ctx: &mut Context<'_, Input>) {
-    let (content, caret, font, font_px, focused, before_cursor, display) = {
+    let (content, caret, font, font_px, caret_color, focused, before_cursor, display) = {
         let me = ctx.me();
         (
             me.content,
             me.caret,
             me.font,
             me.px,
+            me.caret_color,
             me.focused,
             me.string[..me.cursor].to_string(),
             me.display(),
@@ -323,7 +393,7 @@ fn sync(ctx: &mut Context<'_, Input>) {
     let mut caret = ctx.at(caret).unwrap();
     if focused {
         caret.set_left(px(x));
-        caret.set_paint(Paint::Quad(Quad::new(Color::WHITE)));
+        caret.set_paint(Paint::Quad(Quad::new(caret_color)));
     } else {
         caret.set_paint(Paint::None);
     }

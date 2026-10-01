@@ -3,7 +3,7 @@
 
 use mecha_wayland::prelude::*;
 
-/// A clickable box with a text label. It does nothing on its own —
+/// A clickable box with a text label. It does nothing on its own ?
 /// [`Counter`] wires the `Clicked` event on the handle `button` returns.
 struct Button;
 
@@ -66,8 +66,6 @@ impl Widget for Counter {
             LayoutStyle::default().column().center().gap(px(12.0));
 
         let label = s.spawn(me, text(b.font, "0").size(24));
-        let input1 = s.spawn(me, input(b.font));
-        let input2 = s.spawn(me, input(b.font));
         let row = s.spawn(
             me,
             div().style(LayoutStyle::default().row().center().gap(px(8.0))),
@@ -78,15 +76,11 @@ impl Widget for Counter {
         s.on::<Clicked>(minus, move |ctx, _| {
             let count = ctx.me().step(-1);
             ctx.at(label).unwrap().set_text(count.to_string());
-            ctx.at(input1).unwrap().set_text("minus");
-            ctx.at(input2).unwrap().set_text("2minus");
         });
 
         s.on::<Clicked>(plus, move |ctx, _| {
             let count = ctx.me().step(1);
             ctx.at(label).unwrap().set_text(count.to_string());
-            ctx.at(input1).unwrap().set_text("plus");
-            ctx.at(input2).unwrap().set_text("2plus");
         });
 
         Counter { count: 0 }
@@ -137,8 +131,7 @@ fn main() {
         .add_module(PresentationModule {
             app_id: "mecha.counter".into(),
             budget: Budget::default(),
-        })
-        .add_module(TextInputModule);
+        });
 
     let font = app
         .resource_mut::<Atlas>()
