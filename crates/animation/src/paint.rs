@@ -54,30 +54,56 @@ pub(crate) fn on_paint_changed(app: &mut App, changed: &Emitted<OnChanged<Paint>
         };
         let window = app.component::<InWindow>(id).unwrap().0;
 
-        let duration = settings(app, id).and_then(|s| match s.time {
-				// duration == zero is the same as snapping
-            AnimationTime::Duration(duration) if !duration.is_zero() && window.is_some() => {
-                Some((duration, s.easing))
-            }
-            AnimationTime::Duration(_) | AnimationTime::Speed(_) => None,
-				// TODO: speed snaps for now, impl Animatable will give us a max
-				// distance and speed -> duration function
+        // duration == zero is the same as snapping
+        let configuration = settings(app, id).filter(|s| {
+            !matches!(s.time, AnimationTime::Duration(duration) if duration.is_zero())
+                && window.is_some()
         });
         let from = match &app.component::<AnimatedPaint>(id).unwrap().0 {
             Paint::Quad(quad) => Some(*quad),
             _ => None,
         };
-        if let (Some(from), Paint::Quad(to), Some((duration, easing))) = (from, &target, duration) {
+        if let (Some(from), Paint::Quad(to), Some(configuration)) =
+            (from, &target, configuration)
+        {
             let mut transition = app.component_mut::<PaintTransition>(id).unwrap();
             if transition.0.as_ref().is_some_and(|t| t.target == *to) {
                 // An equal target keeps its original timing and starting point.
             } else if from != *to {
+                let duration = match configuration.time {
+                    AnimationTime::Duration(duration) => duration,
+                    AnimationTime::Speed(speed) => {
+                        let distance = [
+                            (from.color.r, to.color.r),
+                            (from.color.g, to.color.g),
+                            (from.color.b, to.color.b),
+                            (from.color.a, to.color.a),
+                            (from.border_color.r, to.border_color.r),
+                            (from.border_color.g, to.border_color.g),
+                            (from.border_color.b, to.border_color.b),
+                            (from.border_color.a, to.border_color.a),
+                            (from.radii.top_left, to.radii.top_left),
+                            (from.radii.top_right, to.radii.top_right),
+                            (from.radii.bottom_right, to.radii.bottom_right),
+                            (from.radii.bottom_left, to.radii.bottom_left),
+                            (from.border.top, to.border.top),
+                            (from.border.right, to.border.right),
+                            (from.border.bottom, to.border.bottom),
+                            (from.border.left, to.border.left),
+                        ]
+                        .into_iter()
+                        .map(|(a, b)| (f64::from(b) - f64::from(a)).abs())
+                        .fold(0.0, f64::max);
+                        Duration::try_from_secs_f64(distance / f64::from(speed))
+                            .unwrap_or(Duration::MAX)
+                    }
+                };
                 transition.0 = Some(Running {
                     from,
                     target: *to,
                     started: now,
                     duration,
-                    easing,
+                    easing: configuration.easing,
                 });
             } else {
 					 // TODO: This branch should never execute because transition.0

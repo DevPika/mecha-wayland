@@ -66,10 +66,12 @@ pub enum AnimationTime {
     /// Elapsed monotonic time from a transition's start to its exact target.
     /// Zero means copy immediately rather than start a transition.
     Duration(Duration),
-    /// Nominal logical pixels per second, finite and strictly positive.
+    /// Nominal units per second, finite and strictly positive.
     ///
-    /// Duration is the largest absolute change among position, size, padding,
-    /// and border fields divided by this speed. All fields share that duration;
+    /// Duration is the largest absolute change among a value's numeric fields
+    /// divided by this speed. For layout the fields are logical pixels; for
+    /// quads they include both colors' RGBA channels (`0.0..=1.0`), corner
+    /// radii and border widths (logical pixels). All fields share that duration;
     /// diagonal position changes use the largest axis change, not path length.
     /// Easing still applies, so only linear easing gives constant field rates.
     /// Durations beyond the representable range saturate at `Duration::MAX`.

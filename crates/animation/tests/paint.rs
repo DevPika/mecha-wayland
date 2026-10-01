@@ -130,7 +130,7 @@ fn changed_quads_start_from_displayed_paint_on_the_next_tick() {
 }
 
 #[test]
-fn unsupported_paint_and_speed_snap_and_cancel_a_running_transition() {
+fn unsupported_paint_snaps_and_cancels_a_running_transition() {
     let mut app = app();
     let window = app.spawn(app.root(), window());
     let first = Paint::Quad(Quad::new(Color::BLACK));
@@ -154,12 +154,15 @@ fn unsupported_paint_and_speed_snap_and_cancel_a_running_transition() {
 
     *app.component_mut::<AnimationSettings>(panel).unwrap() =
         AnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
-    let black = Paint::Quad(Quad::new(Color::BLACK));
-    *app.component_mut::<Paint>(panel).unwrap() = black.clone();
+    let green = Paint::Quad(Quad::new(Color::rgb(0.0, 1.0, 0.0)));
+    *app.component_mut::<Paint>(panel).unwrap() = green;
     app.tick();
-    assert_eq!(app.component::<AnimatedPaint>(panel).unwrap().0, black);
+    assert_eq!(
+        app.component::<AnimatedPaint>(panel).unwrap().0,
+        Paint::Quad(Quad::new(Color::BLACK))
+    );
     assert!(
-        !app.component::<PaintTransition>(panel)
+        app.component::<PaintTransition>(panel)
             .unwrap()
             .is_running()
     );
@@ -382,4 +385,181 @@ fn retargeting_a_quad_starts_from_its_last_displayed_frame() {
             ..target
         })
     );
+}
+
+#[test]
+fn speed_measures_every_numeric_quad_field() {
+    for field in 0..16 {
+        let mut app = app();
+        let window = app.spawn(app.root(), window());
+        let panel = app.spawn_with(
+            window,
+            Painted(Paint::Quad(Quad::default())),
+            (AnimationSettings::new(AnimationTime::Speed(1.0), |t| t),),
+        );
+        app.tick();
+
+        let mut target = Quad::default();
+        let fields = [
+            &mut target.color.r,
+            &mut target.color.g,
+            &mut target.color.b,
+            &mut target.color.a,
+            &mut target.border_color.r,
+            &mut target.border_color.g,
+            &mut target.border_color.b,
+            &mut target.border_color.a,
+            &mut target.radii.top_left,
+            &mut target.radii.top_right,
+            &mut target.radii.bottom_right,
+            &mut target.radii.bottom_left,
+            &mut target.border.top,
+            &mut target.border.right,
+            &mut target.border.bottom,
+            &mut target.border.left,
+        ];
+        let distance = if field < 8 { 1.0 } else { 4.0 };
+        *fields.into_iter().nth(field).unwrap() = distance;
+        *app.component_mut::<Paint>(panel).unwrap() = Paint::Quad(target);
+        app.tick();
+        assert!(
+            app.component::<PaintTransition>(panel)
+                .unwrap()
+                .is_running()
+        );
+        let started = app.resource::<Time>().now();
+        app.signal(Frame(window.id()));
+        app.flush();
+
+        let progress = (app.resource::<Time>().now() - started).as_secs_f32() / distance;
+        assert!(progress < 1.0, "field {field}");
+        let Paint::Quad(shown) = app.component::<AnimatedPaint>(panel).unwrap().0 else {
+            panic!("a quad transition displays a quad");
+        };
+        let values = [
+            shown.color.r,
+            shown.color.g,
+            shown.color.b,
+            shown.color.a,
+            shown.border_color.r,
+            shown.border_color.g,
+            shown.border_color.b,
+            shown.border_color.a,
+            shown.radii.top_left,
+            shown.radii.top_right,
+            shown.radii.bottom_right,
+            shown.radii.bottom_left,
+            shown.border.top,
+            shown.border.right,
+            shown.border.bottom,
+            shown.border.left,
+        ];
+        assert_eq!(values[field], distance * progress, "field {field}");
+        assert!(
+            app.component::<PaintTransition>(panel)
+                .unwrap()
+                .is_running()
+        );
+    }
+}
+
+#[test]
+fn speed_uses_the_largest_change_for_a_shared_eased_duration() {
+    let mut app = app();
+    let window = app.spawn(app.root(), window());
+    let panel = app.spawn_with(
+        window,
+        Painted(Paint::Quad(Quad::default())),
+        (AnimationSettings::new(AnimationTime::Speed(2.0), |t| t * t),),
+    );
+    app.tick();
+    let target = Quad::new(Color::rgba(1.0, 0.5, 0.25, 1.0))
+        .border(2.0, Color::rgb(0.25, 1.0, 0.5))
+        .radii(Corners::new(1.0, 6.0, 2.0, 1.0));
+    *app.component_mut::<Paint>(panel).unwrap() = Paint::Quad(target);
+    app.tick();
+    let started = app.resource::<Time>().now();
+    app.signal(Frame(window.id()));
+    app.flush();
+
+    let progress = (app.resource::<Time>().now() - started).as_secs_f32() / 3.0;
+    assert!(progress < 1.0);
+    let t = progress * progress;
+    let Paint::Quad(shown) = app.component::<AnimatedPaint>(panel).unwrap().0 else {
+        panic!("a quad transition displays a quad");
+    };
+    assert_eq!(shown.radii.top_right, 6.0 * t);
+    assert_eq!(shown.border.top, 2.0 * t);
+    assert_eq!(shown.color.r, t);
+    assert_eq!(shown.border_color.g, t);
+}
+
+#[test]
+fn speed_retargeting_measures_from_the_displayed_quad() {
+    let mut app = app();
+    let window = app.spawn(app.root(), window());
+    let panel = app.spawn_with(
+        window,
+        Painted(Paint::Quad(Quad::new(Color::BLACK))),
+        (AnimationSettings::new(AnimationTime::Speed(0.5), |t| t),),
+    );
+    app.tick();
+    *app.component_mut::<Paint>(panel).unwrap() = Paint::Quad(Quad::new(Color::WHITE));
+    app.tick();
+    app.signal(Frame(window.id()));
+    app.flush();
+    let Paint::Quad(shown) = app.component::<AnimatedPaint>(panel).unwrap().0 else {
+        panic!("a quad transition displays a quad");
+    };
+
+    let target = Quad::new(Color::rgb(0.0, 0.0, 1.0));
+    *app.component_mut::<Paint>(panel).unwrap() = Paint::Quad(target);
+    app.tick();
+    let started = app.resource::<Time>().now();
+    app.signal(Frame(window.id()));
+    app.flush();
+    let distance = (f64::from(target.color.r) - f64::from(shown.color.r))
+        .abs()
+        .max((f64::from(target.color.g) - f64::from(shown.color.g)).abs())
+        .max((f64::from(target.color.b) - f64::from(shown.color.b)).abs());
+    let duration = Duration::try_from_secs_f64(distance / 0.5).unwrap();
+    let progress = (app.resource::<Time>().now() - started).as_secs_f32() / duration.as_secs_f32();
+    assert!(progress < 1.0);
+    let lerp = |a: f32, b: f32| a + (b - a) * progress;
+    let Paint::Quad(current) = app.component::<AnimatedPaint>(panel).unwrap().0 else {
+        panic!("a quad transition displays a quad");
+    };
+    assert_eq!(current.color.r, lerp(shown.color.r, target.color.r));
+    assert_eq!(current.color.g, lerp(shown.color.g, target.color.g));
+    assert_eq!(current.color.b, lerp(shown.color.b, target.color.b));
+}
+
+#[test]
+fn extreme_speeds_saturate_or_complete_on_the_first_frame() {
+    for (speed, completes) in [(f32::MIN_POSITIVE, false), (f32::MAX, true)] {
+        let mut app = app();
+        let window = app.spawn(app.root(), window());
+        let panel = app.spawn_with(
+            window,
+            Painted(Paint::Quad(Quad::new(Color::BLACK))),
+            (AnimationSettings::new(AnimationTime::Speed(speed), |t| t),),
+        );
+        app.tick();
+        *app.component_mut::<Paint>(panel).unwrap() = Paint::Quad(Quad::new(Color::WHITE));
+        app.tick();
+        app.signal(Frame(window.id()));
+        app.flush();
+        assert_eq!(
+            app.component::<PaintTransition>(panel)
+                .unwrap()
+                .is_running(),
+            !completes
+        );
+        if completes {
+            assert_eq!(
+                app.component::<AnimatedPaint>(panel).unwrap().0,
+                Paint::Quad(Quad::new(Color::WHITE))
+            );
+        }
+    }
 }
