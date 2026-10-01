@@ -40,6 +40,7 @@
 //! # Quick start
 //!
 //! ```no_run
+//! use animation::AnimationModule;
 //! use app::prelude::*;
 //! use atlas::Atlas;
 //! use gles::Budget;
@@ -67,6 +68,7 @@
 //!     .add_module(LayoutModule)
 //!     .add_module(PaintModule)
 //!     .add_module(WindowModule)
+//!     .add_module(AnimationModule)
 //!     .add_module(RenderModule::default());
 //! f.app.insert_resource(Atlas::new());
 //! f.app.add_module(PresentationModule { app_id: "example".into(), budget: Budget::default() });

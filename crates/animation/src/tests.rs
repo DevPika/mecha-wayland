@@ -2,7 +2,6 @@ use super::*;
 use ::paint::prelude::*; // crate root. Why is this even here
 use geometry::Color;
 use layout::prelude::*;
-use render::{RenderModule, Scenes};
 use window::{FrameRequested, WindowModule, window};
 
 struct MoveTo(f32);
@@ -32,7 +31,6 @@ fn app() -> App {
         .add_module(PaintModule)
         .add_module(WindowModule)
         .add_module(AnimationModule)
-        .add_module(RenderModule::default())
         .init_resource::<Requests>()
         .system(|app, f: &FrameRequested| app.resource_mut::<Requests>().0.push(f.0));
     app
@@ -115,16 +113,12 @@ fn first_resolution_snaps_then_an_event_starts_a_duration_transition() {
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 100.0);
     assert!(app.component::<Transition>(panel).unwrap().0.is_none());
 
-    // Let rendering consume the final displayed value and close pending demand.
+    // Close pending demand after the final displayed value.
     app.signal(Frame(window));
     app.flush();
     app.resource_mut::<Requests>().0.clear();
     app.tick();
-    assert_eq!(
-        app.resource::<Requests>().0,
-        [window],
-        "the final layout notification requests a redraw"
-    );
+    assert!(app.resource::<Requests>().0.is_empty());
     app.signal(Frame(window));
     app.flush();
     app.resource_mut::<Requests>().0.clear();
@@ -148,22 +142,10 @@ fn nonanimated_nodes_copy_and_request_a_frame_in_the_same_tick() {
 
     app.signal(Frame(window));
     app.flush();
-    assert!(
-        app.resource_mut::<Scenes>()
-            .queue(window, 1)
-            .unwrap()
-            .opaque
-            .commands
-            .iter()
-            .any(|c| c.rect.x() == 100.0)
-    );
+    assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 100.0);
     app.resource_mut::<Requests>().0.clear();
     app.tick();
-    assert_eq!(
-        app.resource::<Requests>().0,
-        [window],
-        "the late change notification requests another frame"
-    );
+    assert!(app.resource::<Requests>().0.is_empty());
 }
 
 #[test]
@@ -282,7 +264,7 @@ fn frame_updates_only_its_window_and_removed_slots_do_not_inherit_transitions() 
 }
 
 #[test]
-fn window_roots_snap_and_frame_animation_runs_before_render() {
+fn window_roots_snap_and_frame_animation_reaches_the_target() {
     let mut app = app();
     let (window, panel) = scene(&mut app);
     *app.component_mut::<AnimationSettings>(window).unwrap() = animated(1000, |t| t);
@@ -300,10 +282,7 @@ fn window_roots_snap_and_frame_animation_runs_before_render() {
         .started = Instant::now() - Duration::from_secs(2);
     app.signal(Frame(window));
     app.flush();
-    let mut scenes = app.resource_mut::<Scenes>();
-    let queue = scenes.queue(window, 1).unwrap();
-    assert!(queue.opaque.commands.iter().any(|c| c.rect.x() == 100.0));
-    assert!(!queue.scissor.is_empty());
+    assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 100.0);
 }
 
 #[test]

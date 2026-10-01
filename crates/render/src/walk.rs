@@ -1,8 +1,9 @@
-//! The walk: one window's subtree in preorder, `Layout` and `Paint` read
+//! The walk: one window's subtree in preorder, `Layout` and `AnimatedPaint` read
 //! into commands in device pixels, the solid behind each node carried
 //! down, and the damage of dirty nodes collected. Nothing here is a
 //! system; `on_frame` calls [`walk`] once per `Frame`.
 
+use animation::AnimatedPaint;
 use app::{Comps, CompsMut, NodeId, Tree};
 use geometry::{Color, Corners, Insets, Rect};
 use layout::Layout;
@@ -98,7 +99,7 @@ pub(crate) fn hand_down(
 pub(crate) fn walk(
     tree: Tree<'_>,
     layouts: &Comps<'_, Layout>,
-    paints: &Comps<'_, Paint>,
+    paints: &Comps<'_, AnimatedPaint>,
     drawn: &mut CompsMut<'_, Drawn>,
     window: NodeId,
     scale: f32,
@@ -118,9 +119,10 @@ pub(crate) fn walk(
     while let Some((id, solid)) = stack.pop() {
         let z = 2.0 * visited as f32;
         visited += 1;
-        let (Some(layout), Some(paint)) = (layouts.get(id), paints.get(id)) else {
+        let (Some(layout), Some(animated)) = (layouts.get(id), paints.get(id)) else {
             continue;
         };
+        let paint = &animated.0;
         let r = scale_rect(layout.rect, scale);
         let mut bounds: Option<Rect> = None;
         let mut child_solid = solid;

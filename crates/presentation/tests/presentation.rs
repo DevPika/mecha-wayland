@@ -4,6 +4,7 @@
 
 use std::sync::{Mutex, MutexGuard};
 
+use animation::AnimationModule;
 use app::prelude::*;
 use atlas::Atlas;
 use geometry::Color;
@@ -199,6 +200,7 @@ fn fake() -> Option<(MutexGuard<'static, ()>, Fake)> {
         .add_module(PaintModule)
         .add_module(WindowModule)
         .add_module(InteractivityModule)
+        .add_module(AnimationModule)
         .add_module(RenderModule::default())
         .insert_resource(Atlas::new());
     f.app

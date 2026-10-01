@@ -3,6 +3,7 @@
 
 use std::cell::RefCell;
 
+use animation::{AnimatedPaint, AnimationModule, AnimationSettings, AnimationTime};
 use app::prelude::*;
 use geometry::{Color, Corners, Insets, Point, Rect, Size};
 use layout::prelude::*;
@@ -47,13 +48,14 @@ const GREEN: Color = Color::rgb(0.0, 1.0, 0.0);
 const BLUE: Color = Color::rgb(0.0, 0.0, 1.0);
 const HALF_BLUE: Color = Color::rgba(0.0, 0.0, 1.0, 0.5);
 
-/// Layout, paint, window and render, `buffers` frames of damage, the loop
+/// Layout, paint, animation, window and render, `buffers` frames of damage, the loop
 /// closed by `answer`, requests logged.
 fn app_with(buffers: usize, externally_driven: bool) -> App {
     let mut app = App::new();
     app.add_module(LayoutModule)
         .add_module(PaintModule)
         .add_module(WindowModule)
+        .add_module(AnimationModule)
         .add_module(RenderModule { buffers })
         .system(log_requested)
         .system(answer);
@@ -672,7 +674,7 @@ fn a_paint_change_damages_that_node_and_queues_only_what_touches_it() {
     let mut app = app();
     let (win, a, _) = two_quads(&mut app);
 
-    *app.component_mut::<Paint>(a).unwrap() = Paint::Quad(Quad::new(BLUE));
+    app.component_mut::<AnimatedPaint>(a).unwrap().0 = Paint::Quad(Quad::new(BLUE));
     app.tick();
     assert_eq!(take_requested(), vec![win.id()]);
 
@@ -682,6 +684,49 @@ fn a_paint_change_damages_that_node_and_queues_only_what_touches_it() {
     assert_eq!(q.opaque.commands.len(), 1, "B touches the damage nowhere");
     assert_eq!(q.opaque.commands[0].color, BLUE);
     assert!(q.translucent.scissor.is_empty());
+}
+
+#[test]
+fn renderer_reads_displayed_paint_not_its_target() {
+    use std::time::Duration;
+
+    let mut app = app();
+    let (win, a, _) = two_quads(&mut app);
+    *app.component_mut::<AnimationSettings>(a).unwrap() =
+        AnimationSettings::new(AnimationTime::Duration(Duration::from_secs(60)), |t| t);
+    *app.component_mut::<Paint>(a).unwrap() = Paint::Quad(Quad::new(BLUE));
+    app.tick();
+
+    let Paint::Quad(displayed) = app.component::<AnimatedPaint>(a).unwrap().0 else {
+        panic!("the quad remains displayed during its transition");
+    };
+    assert_ne!(displayed.color, BLUE);
+    let q = queue(&mut app, win.id(), 0);
+    assert_eq!(
+        q.opaque
+            .commands
+            .iter()
+            .find(|c| c.rect == A_RECT)
+            .unwrap()
+            .color,
+        displayed.color
+    );
+}
+
+#[test]
+fn target_paint_changes_receive_damage_after_the_displayed_change_notification() {
+    let mut app = app();
+    let (win, a, _) = two_quads(&mut app);
+    *app.component_mut::<Paint>(a).unwrap() = Paint::Quad(Quad::new(BLUE));
+    app.tick();
+    assert_eq!(take_requested(), vec![win.id()]);
+    assert!(queue(&mut app, win.id(), 1).scissor.is_empty());
+
+    app.tick();
+    assert_eq!(take_requested(), vec![win.id()]);
+    let q = queue(&mut app, win.id(), 1);
+    assert_eq!(q.scissor, vec![A_RECT]);
+    assert_eq!(q.opaque.commands[0].color, BLUE);
 }
 
 #[test]
@@ -838,11 +883,6 @@ fn renderer_reads_displayed_window_and_content_geometry_not_targets() {
 
     app.component_mut::<ComputedLayout>(win).unwrap().rect = Rect::new(0.0, 0.0, 900.0, 700.0);
     app.component_mut::<ComputedLayout>(image).unwrap().rect = Rect::ZERO;
-    app.tick();
-    assert!(
-        take_requested().is_empty(),
-        "target changes are not subscribed to"
-    );
     frame(&mut app, win.id());
     assert_eq!(queue(&mut app, win.id(), 0).size, Size::new(200.0, 100.0));
     assert_eq!(
@@ -857,8 +897,7 @@ fn renderer_reads_displayed_window_and_content_geometry_not_targets() {
         border: Insets::all(1.0),
     };
     *app.component_mut::<Layout>(image).unwrap() = displayed;
-    app.tick();
-    assert_eq!(take_requested(), vec![win.id()]);
+    frame(&mut app, win.id());
     let q = queue(&mut app, win.id(), 1);
     assert_eq!(q.size, Size::new(250.0, 120.0));
     assert_eq!(q.opaque.commands[0].rect, displayed.content());
@@ -881,6 +920,7 @@ fn frame_time_layout_changes_damage_equal_bounds() {
     app.add_module(LayoutModule)
         .add_module(PaintModule)
         .add_module(WindowModule)
+        .add_module(AnimationModule)
         .init_resource::<NextLayout>()
         .system(animate)
         .add_module(RenderModule::default())
@@ -945,9 +985,9 @@ fn ages_union_the_frames_held_and_anything_else_is_the_window() {
     let mut app = app_with(2, false);
     let (win, a, b) = two_quads(&mut app);
 
-    *app.component_mut::<Paint>(a).unwrap() = Paint::Quad(Quad::new(BLUE));
+    app.component_mut::<AnimatedPaint>(a).unwrap().0 = Paint::Quad(Quad::new(BLUE));
     app.tick();
-    *app.component_mut::<Paint>(b).unwrap() = Paint::Quad(Quad::new(BLUE));
+    app.component_mut::<AnimatedPaint>(b).unwrap().0 = Paint::Quad(Quad::new(BLUE));
     app.tick();
 
     assert_eq!(queue(&mut app, win.id(), 1).scissor, vec![B_RECT]);
@@ -990,9 +1030,9 @@ fn changes_request_one_frame_per_window_and_none_outside_any() {
     app.tick();
     assert_eq!(take_requested(), vec![w1.id(), w2.id()]);
 
-    *app.component_mut::<Paint>(c1).unwrap() = Paint::Quad(Quad::new(GREEN));
-    *app.component_mut::<Paint>(c2).unwrap() = Paint::Quad(Quad::new(GREEN));
-    *app.component_mut::<Paint>(c1).unwrap() = Paint::Quad(Quad::new(BLUE));
+    app.component_mut::<AnimatedPaint>(c1).unwrap().0 = Paint::Quad(Quad::new(GREEN));
+    app.component_mut::<AnimatedPaint>(c2).unwrap().0 = Paint::Quad(Quad::new(GREEN));
+    app.component_mut::<AnimatedPaint>(c1).unwrap().0 = Paint::Quad(Quad::new(BLUE));
     app.tick();
     assert_eq!(
         take_requested(),
@@ -1000,7 +1040,7 @@ fn changes_request_one_frame_per_window_and_none_outside_any() {
         "once each, in first-write order"
     );
 
-    *app.component_mut::<Paint>(stray).unwrap() = Paint::Quad(Quad::new(GREEN));
+    app.component_mut::<AnimatedPaint>(stray).unwrap().0 = Paint::Quad(Quad::new(GREEN));
     app.tick();
     assert!(take_requested().is_empty(), "outside every window");
 }
