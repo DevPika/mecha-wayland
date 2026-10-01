@@ -156,10 +156,10 @@ struct Running {
 /// the renderer. Installation claims displayed-layout updates through
 /// [`LayoutControl`]; layout still initializes every node's first resolved box.
 ///
-/// The systems sample [`Time`] on [`PostTick`] and [`Frame`], reconcile targets
-/// on [`LayoutDone`], and advance transitions on `Frame`. Registration order
-/// ensures the frame's clock sample precedes interpolation, which must precede
-/// rendering. There is no independent timer or frame-rate loop in this module.
+/// The systems sample [`Time`] on [`PostTick`] and [`Frame`], reconcile layout
+/// targets on [`LayoutDone`], and prepare paint transitions when target paint
+/// changes. Layout transitions advance on `Frame`; paint frame advancement is
+/// not installed yet. There is no independent timer or frame-rate loop here.
 pub struct AnimationModule;
 impl Module for AnimationModule {
     /// Claim displayed layouts and register the systems in execution order.
@@ -174,6 +174,7 @@ impl Module for AnimationModule {
             .register_component::<PaintTransition>()
             .system(paint::on_spawned)
             .system(on_layout_done)
+            .system(paint::on_paint_changed)
             .system(on_frame);
     }
 }
