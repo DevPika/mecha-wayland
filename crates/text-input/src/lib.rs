@@ -86,7 +86,7 @@
 use app::prelude::*;
 use interactivity::{KeyboardFocus, Press};
 use wayland::prelude::*;
-use widgets::{Input, InputEdit, InputFocus};
+use widgets::{ContentHint, ContentPurpose, Input, InputEdit, InputFocus};
 
 pub mod prelude {
     pub use crate::{TextInput, TextInputModule};
@@ -172,9 +172,14 @@ impl Module for TextInputModule {
 /// only — the caret toggle is the widget's own `InputFocus` handler,
 /// driven by the emits the press path and `on_focus` produce.
 fn focus(app: &mut App, w: NodeId) {
-    let (text, cursor) = match app.widget::<Input>(w) {
-        Some(i) => (i.text().to_string(), i.cursor()),
-        None => (String::new(), 0),
+    let (text, cursor, hint, purpose) = match app.widget::<Input>(w) {
+        Some(i) => (
+            i.text().to_string(),
+            i.cursor(),
+            i.content_hint(),
+            i.content_purpose(),
+        ),
+        None => (String::new(), 0, ContentHint::NONE, ContentPurpose::Normal),
     };
     app.resource_mut::<KeyboardFocus>().focus(w);
     let (mut ti, mut wl) = app.query::<(ResMut<TextInput>, ResMut<Wayland>)>();
@@ -191,8 +196,44 @@ fn focus(app: &mut App, w: NodeId) {
         let (text, cursor) = cap(&text, cursor);
         ti.input
             .set_surrounding_text(&mut wl, &text, cursor as i32, cursor as i32);
+        // Tell the input method what kind of field this is so it can
+        // raise the right panel (e.g. a numeric keypad for `Pin`, a
+        // hidden-text keyboard for `Password`). Double-buffered like
+        // the surrounding text, so it lands with this `commit`.
+        ti.input
+            .set_content_type(&mut wl, wayland_hint(hint), wayland_purpose(purpose));
         ti.input.commit(&mut wl);
         ti.enabled = true;
+    }
+}
+
+/// Translate the widget's [`ContentHint`] (mirroring the protocol's
+/// `content_hint` bits) into the generated
+/// [`ZwpTextInputV3ContentHint`]. Both derive from the same XML, so a
+/// bit-for-bit truncation is exact.
+fn wayland_hint(hint: ContentHint) -> ZwpTextInputV3ContentHint {
+    ZwpTextInputV3ContentHint::from_bits_truncate(hint.bits())
+}
+
+/// Translate the widget's [`ContentPurpose`] (mirroring the protocol's
+/// `content_purpose` enum) into the generated
+/// [`ZwpTextInputV3ContentPurpose`].
+fn wayland_purpose(purpose: ContentPurpose) -> ZwpTextInputV3ContentPurpose {
+    match purpose {
+        ContentPurpose::Normal => ZwpTextInputV3ContentPurpose::Normal,
+        ContentPurpose::Alpha => ZwpTextInputV3ContentPurpose::Alpha,
+        ContentPurpose::Digits => ZwpTextInputV3ContentPurpose::Digits,
+        ContentPurpose::Number => ZwpTextInputV3ContentPurpose::Number,
+        ContentPurpose::Phone => ZwpTextInputV3ContentPurpose::Phone,
+        ContentPurpose::Url => ZwpTextInputV3ContentPurpose::Url,
+        ContentPurpose::Email => ZwpTextInputV3ContentPurpose::Email,
+        ContentPurpose::Name => ZwpTextInputV3ContentPurpose::Name,
+        ContentPurpose::Password => ZwpTextInputV3ContentPurpose::Password,
+        ContentPurpose::Pin => ZwpTextInputV3ContentPurpose::Pin,
+        ContentPurpose::Date => ZwpTextInputV3ContentPurpose::Date,
+        ContentPurpose::Time => ZwpTextInputV3ContentPurpose::Time,
+        ContentPurpose::Datetime => ZwpTextInputV3ContentPurpose::Datetime,
+        ContentPurpose::Terminal => ZwpTextInputV3ContentPurpose::Terminal,
     }
 }
 

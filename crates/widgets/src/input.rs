@@ -21,12 +21,98 @@
 
 use app::{Build, Context, Event, Handle, Widget};
 use atlas::{Atlas, FontId};
+use bitflags::bitflags;
 use geometry::Color;
 use interactivity::{KeyMeaning, KeyPress, KeyRepeat, Press};
 use layout::{Layout, LayoutStyle, StyleContext, px};
 use paint::{Paint, PaintContext, Quad};
 
 use crate::{Div, Text, TextContext, div, text};
+
+bitflags! {
+    /// Hints about the kind of text an [`Input`] is editing, mirroring the
+    /// `content_hint` bitfield of the `zwp_text_input_v3` protocol. Sent to
+    /// the compositor by the `text-input` crate when text-input-v3 is
+    /// available; ignored (the widget falls back to plain keyboard input)
+    /// when it is not.
+    ///
+    /// Combine flags with `|`, e.g.
+    /// `ContentHint::SENSITIVEDATA | ContentHint::HIDDENTEXT`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+    pub struct ContentHint: u32 {
+        /// No special behavior (the default).
+        const NONE = 0x0;
+        /// Suggest word completions.
+        const COMPLETION = 0x1;
+        /// Suggest word corrections.
+        const SPELLCHECK = 0x2;
+        /// Switch to uppercase letters at the start of a sentence.
+        const AUTOCAPITALIZATION = 0x4;
+        /// Prefer lowercase letters.
+        const LOWERCASE = 0x8;
+        /// Prefer uppercase letters.
+        const UPPERCASE = 0x10;
+        /// Prefer casing for titles and headings (can be language dependent).
+        const TITLECASE = 0x20;
+        /// Characters should be hidden (passwords).
+        const HIDDENTEXT = 0x40;
+        /// Typed text should not be stored (sensitive input).
+        const SENSITIVEDATA = 0x80;
+        /// Just Latin characters should be entered.
+        const LATIN = 0x100;
+        /// The text input is multiline.
+        const MULTILINE = 0x200;
+        /// An on-screen way to fill in the input is already provided by
+        /// the client.
+        const ONSCREENINPUTPROVIDED = 0x400;
+        /// Prefer not offering emoji support.
+        const NOEMOJI = 0x800;
+        /// The text input will display preedit text in place.
+        const PREEDITSHOWN = 0x1000;
+    }
+}
+
+/// The primary purpose of an [`Input`]'s text, mirroring the
+/// `content_purpose` enum of the `zwp_text_input_v3` protocol. Sent to
+/// the compositor by the `text-input` crate when text-input-v3 is
+/// available; ignored (the widget falls back to plain keyboard input)
+/// when it is not.
+///
+/// Combine with [`ContentHint`] for the full effect — e.g. a password
+/// field pairs `ContentPurpose::Password` with
+/// `ContentHint::SENSITIVEDATA | ContentHint::HIDDENTEXT`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum ContentPurpose {
+    /// Default input, allowing all characters (the default).
+    #[default]
+    Normal,
+    /// Allow only alphabetic characters.
+    Alpha,
+    /// Allow only digits.
+    Digits,
+    /// Input a number (including decimal separator and sign).
+    Number,
+    /// Input a phone number.
+    Phone,
+    /// Input a URL.
+    Url,
+    /// Input an email address.
+    Email,
+    /// Input a name of a person.
+    Name,
+    /// Input a password (combine with `ContentHint::SENSITIVEDATA`).
+    Password,
+    /// Input is a numeric password (combine with `ContentHint::SENSITIVEDATA`).
+    Pin,
+    /// Input a date.
+    Date,
+    /// Input a time.
+    Time,
+    /// Input a date and time.
+    Datetime,
+    /// Input for a terminal.
+    Terminal,
+}
 
 /// One applied edit: everything a single `zwp_text_input_v3.done`
 /// carried, emitted at the focused [`Input`] by the `text-input` crate.
@@ -76,6 +162,14 @@ pub struct Input {
     /// Whether this widget holds the text focus; the caret is shown
     /// only while this is `true`.
     focused: bool,
+    /// What kind of text this field edits, for an input method that
+    /// speaks text-input-v3. Read by the `text-input` crate on focus
+    /// and turned into a `set_content_type` request; ignored entirely
+    /// when text-input-v3 is unavailable, in which case the widget is
+    /// driven only by `KeyPress`/`KeyRepeat`.
+    content_hint: ContentHint,
+    /// The primary purpose of this field's text. See `content_hint`.
+    content_purpose: ContentPurpose,
 }
 
 impl Input {
@@ -92,6 +186,18 @@ impl Input {
     /// The preedit shown at the cursor, if any.
     pub fn preedit(&self) -> Option<&str> {
         self.preedit.as_deref()
+    }
+
+    /// The content hints for this field, sent to the input method when
+    /// text-input-v3 is available.
+    pub fn content_hint(&self) -> ContentHint {
+        self.content_hint
+    }
+
+    /// The content purpose for this field, sent to the input method when
+    /// text-input-v3 is available.
+    pub fn content_purpose(&self) -> ContentPurpose {
+        self.content_purpose
     }
 
     /// What the widget shows: the string with the preedit at the cursor.
@@ -225,6 +331,13 @@ pub fn input(font: FontId) -> InputBuilder {
         caret: Color::WHITE,
         border: (1.0, Color::rgb(0.5, 0.5, 0.5)),
         background: None,
+        // No hints: a plain text field. The `text-input` crate turns
+        // these into a `set_content_type` request on focus when
+        // text-input-v3 is available; with the defaults the compositor
+        // raises a generic keyboard, and without text-input-v3 the
+        // widget is driven only by `KeyPress`/`KeyRepeat`.
+        content_hint: ContentHint::NONE,
+        content_purpose: ContentPurpose::Normal,
     }
 }
 
@@ -237,6 +350,8 @@ pub struct InputBuilder {
     caret: Color,
     border: (f32, Color),
     background: Option<Color>,
+    content_hint: ContentHint,
+    content_purpose: ContentPurpose,
 }
 
 impl InputBuilder {
@@ -278,6 +393,26 @@ impl InputBuilder {
     /// Container background colour; default transparent.
     pub fn background(mut self, color: Color) -> Self {
         self.background = Some(color);
+        self
+    }
+    /// Content hints for the input method (text-input-v3
+    /// `content_hint`), e.g. `ContentHint::SENSITIVEDATA |
+    /// ContentHint::HIDDENTEXT` for a password field. Default
+    /// `ContentHint::NONE`. Combined with `.content_purpose(..)` and
+    /// sent on focus by the `text-input` crate; ignored when
+    /// text-input-v3 is unavailable, in which case the widget falls
+    /// back to plain keyboard input.
+    pub fn content_hint(mut self, hint: ContentHint) -> Self {
+        self.content_hint = hint;
+        self
+    }
+    /// The primary purpose of the field's text (text-input-v3
+    /// `content_purpose`), e.g. `ContentPurpose::Email` or
+    /// `ContentPurpose::Password`. Default `ContentPurpose::Normal`.
+    /// Combined with `.content_hint(..)` and sent on focus by the
+    /// `text-input` crate; ignored when text-input-v3 is unavailable.
+    pub fn content_purpose(mut self, purpose: ContentPurpose) -> Self {
+        self.content_purpose = purpose;
         self
     }
 }
@@ -361,6 +496,8 @@ impl Widget for Input {
             cursor,
             preedit: None,
             focused: false,
+            content_hint: b.content_hint,
+            content_purpose: b.content_purpose,
         }
     }
 }

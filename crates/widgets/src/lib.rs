@@ -65,13 +65,15 @@ mod text;
 pub use div::{Div, DivBuilder, DivContext, div};
 pub use icon::{Icon, IconBuilder, IconContext, icon};
 pub use image::{Image, ImageBuilder, ImageContext, image};
-pub use input::{Input, InputBuilder, InputContext, InputEdit, InputFocus, input};
+pub use input::{
+    ContentHint, ContentPurpose, Input, InputBuilder, InputContext, InputEdit, InputFocus, input,
+};
 pub use text::{Text, TextBuilder, TextContext, text};
 
 pub mod prelude {
     pub use crate::{
-        Div, DivBuilder, DivContext, Icon, IconBuilder, IconContext, Image, ImageBuilder,
-        ImageContext, Input, InputBuilder, InputContext, InputEdit, InputFocus, Text, TextBuilder,
-        TextContext, div, icon, image, input, text,
+        ContentHint, ContentPurpose, Div, DivBuilder, DivContext, Icon, IconBuilder, IconContext,
+        Image, ImageBuilder, ImageContext, Input, InputBuilder, InputContext, InputEdit,
+        InputFocus, Text, TextBuilder, TextContext, div, icon, image, input, text,
     };
 }

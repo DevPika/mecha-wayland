@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 app.workspace = true
 atlas.workspace = true
+bitflags.workspace = true
 geometry.workspace = true
 interactivity.workspace = true
 layout.workspace = true

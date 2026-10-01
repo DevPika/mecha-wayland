@@ -82,6 +82,8 @@ impl Widget for Form {
                 .style(LayoutStyle::default().min_width(px(72.0))),
         );
         // `.caret(..)` overrides the caret colour independent of `.color`.
+        // `.content_purpose(..)` tells text-input-v3 to raise an email
+        // keyboard (or falls back to a plain keyboard without it).
         let email = s.spawn(
             email_row,
             input(b.font)
@@ -90,7 +92,8 @@ impl Widget for Form {
                 .border(1.0, field_border)
                 .background(field_bg)
                 .color(field_color)
-                .caret(accent),
+                .caret(accent)
+                .content_purpose(ContentPurpose::Email),
         );
 
         let pw_row = s.spawn(
@@ -105,13 +108,19 @@ impl Widget for Form {
                 .style(LayoutStyle::default().min_width(px(72.0))),
         );
         // A thicker accent border with no background fill.
+        // `.content_purpose(..)` + `.content_hint(..)` mark this as a
+        // password field: text-input-v3 gets `Password` purpose with
+        // `SENSITIVEDATA | HIDDENTEXT` hints (and without text-input-v3
+        // the widget is driven by plain keyboard events).
         let password = s.spawn(
             pw_row,
             input(b.font)
                 .size(18)
                 .style(LayoutStyle::default().fill().min_width(px(72.0)))
                 .border(2.0, accent)
-                .color(field_color),
+                .color(field_color)
+                .content_purpose(ContentPurpose::Password)
+                .content_hint(ContentHint::SENSITIVEDATA | ContentHint::HIDDENTEXT),
         );
 
         let submit = s.spawn(me, button(b.font, "Submit"));

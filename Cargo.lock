@@ -885,6 +885,7 @@ version = "0.1.0"
 dependencies = [
  "app",
  "atlas",
+ "bitflags 2.13.2",
  "geometry",
  "interactivity",
  "layout",
