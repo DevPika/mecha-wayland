@@ -247,10 +247,13 @@ pub(crate) fn on_keyboard(app: &mut App, e: &WlKeyboardEvent) {
             // `new_from_fd` is unsafe (mmap); read the fd to a string and
             // compile with the safe `new_from_string`. Only `xkb_v1` is
             // handled; `no_keymap` leaves xkb unset.
+            // Seek to the start first: memfds are seekable, so the read is
+            // offset-independent of whatever a prior run left behind.
             if *format == WlKeyboardKeymapFormat::XkbV1 {
                 let mut file = std::fs::File::from(fd.try_clone().expect("dup the keymap fd"));
+                use std::io::{Read, Seek, SeekFrom};
+                let _ = file.seek(SeekFrom::Start(0));
                 let mut buf = vec![0u8; *size as usize];
-                use std::io::Read;
                 if file.read_exact(&mut buf).is_ok() {
                     if let Ok(string) = String::from_utf8(buf) {
                         let ctx = xkb::Context::new(xkb::CONTEXT_NO_FLAGS);
