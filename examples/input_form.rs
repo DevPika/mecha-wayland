@@ -96,6 +96,32 @@ impl Widget for Form {
                 .content_purpose(ContentPurpose::Email),
         );
 
+        let amount_row = s.spawn(
+            me,
+            div().style(LayoutStyle::default().row().center().gap(px(8.0))),
+        );
+        s.spawn(
+            amount_row,
+            text(b.font, "Amount")
+                .size(16)
+                .color(label_color)
+                .style(LayoutStyle::default().min_width(px(72.0))),
+        );
+        // `.content_purpose(..)` tells text-input-v3 this is a number,
+        // so a compositor that speaks the protocol raises a numeric
+        // keypad (with decimal separator and sign) on focus. Without
+        // text-input-v3 the widget is driven by plain keyboard events.
+        let amount = s.spawn(
+            amount_row,
+            input(b.font)
+                .size(18)
+                .style(LayoutStyle::default().fill().min_width(px(72.0)))
+                .border(1.0, field_border)
+                .background(field_bg)
+                .color(field_color)
+                .content_purpose(ContentPurpose::Number),
+        );
+
         let pw_row = s.spawn(
             me,
             div().style(LayoutStyle::default().row().center().gap(px(8.0))),
@@ -107,7 +133,6 @@ impl Widget for Form {
                 .color(label_color)
                 .style(LayoutStyle::default().min_width(px(72.0))),
         );
-        // A thicker accent border with no background fill.
         // `.content_purpose(..)` + `.content_hint(..)` mark this as a
         // password field: text-input-v3 gets `Password` purpose with
         // `SENSITIVEDATA | HIDDENTEXT` hints (and without text-input-v3
@@ -149,8 +174,11 @@ impl Widget for Form {
         s.on::<Clicked>(submit, move |ctx, _| {
             let name = ctx.at(name).unwrap().me().text().to_string();
             let email = ctx.at(email).unwrap().me().text().to_string();
+            let amount = ctx.at(amount).unwrap().me().text().to_string();
             let password = ctx.at(password).unwrap().me().text().to_string();
-            println!("submit: name={name:?} email={email:?} password={password:?}");
+            println!(
+                "submit: name={name:?} email={email:?} amount={amount:?} password={password:?}"
+            );
         });
 
         Form
@@ -205,7 +233,7 @@ impl Widget for Shell {
             window()
                 .title("input form")
                 .clear(Color::rgb(0.12, 0.12, 0.14))
-                .layout(LayoutStyle::default().center().size(px(360.0), px(280.0))),
+                .layout(LayoutStyle::default().center().size(px(360.0), px(320.0))),
         );
         s.on::<CloseRequested>(win, |ctx, _| ctx.signal(Stop));
         s.spawn(win, form(b.font));
