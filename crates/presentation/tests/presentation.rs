@@ -657,6 +657,34 @@ fn frames_are_throttled_by_the_callback() {
 }
 
 #[test]
+fn changing_window_direction_keeps_the_configured_size_and_draws() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 640, 480);
+    f.requests();
+    f.send(CALLBACK, ev::DONE, |w| w.uint(1));
+    f.turn();
+    f.requests();
+
+    let mut style = f.app.component::<LayoutStyle>(win).unwrap().clone();
+    style.direction = Direction::Row;
+    *f.app.component_mut::<LayoutStyle>(win).unwrap() = style;
+    repaint(&mut f, win);
+    f.turn();
+    assert_eq!(
+        f.app.component::<LayoutStyle>(win).unwrap().width,
+        px(640.0)
+    );
+    assert_eq!(
+        f.app.component::<LayoutStyle>(win).unwrap().height,
+        px(480.0)
+    );
+    assert!(
+        !attaches(&mut f).is_empty(),
+        "changing only direction must still attach a frame"
+    );
+}
+
+#[test]
 fn with_both_buffers_held_a_release_draws() {
     let Some((_gpu, mut f)) = fake() else { return };
     let win = configured(&mut f, 64, 64);

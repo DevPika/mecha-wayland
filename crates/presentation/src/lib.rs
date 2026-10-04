@@ -674,7 +674,10 @@ fn on_frame(app: &mut App, f: &Frame) {
     );
     if want != (slots.width, slots.height) {
         // A frame between a configure and the layout that follows it:
-        // the layout's change requests the frame that fits.
+        // the layout's change requests the frame that fits. A widget must
+        // preserve the compositor-configured window size when editing other
+        // style fields: an arbitrary size change has no matching configure
+        // to update the slots and can leave the window without a callback.
         entry.wanting = true;
         return;
     }
