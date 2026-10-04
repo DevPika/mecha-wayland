@@ -3,10 +3,9 @@
 //! down, and the damage of dirty nodes collected. Nothing here is a
 //! system; `on_frame` calls [`walk`] once per `Frame`.
 
-use animation::AnimatedPaint;
+use animation::{AnimatedPaint, Layout};
 use app::{Comps, CompsMut, NodeId, Tree};
 use geometry::{Color, Corners, Insets, Rect};
-use layout::Layout;
 use paint::{MonochromeSprite, Paint, PolychromeSprite, Quad};
 
 use crate::{Command, Drawn, NO_TILE, rect, scene::Scene};

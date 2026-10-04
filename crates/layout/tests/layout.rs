@@ -25,7 +25,7 @@ impl Widget for Leaf {
 thread_local! {
     /// Every `LayoutDone` seen, in order: its `roots`.
     static DONE: RefCell<Vec<Vec<NodeId>>> = const { RefCell::new(Vec::new()) };
-    /// Every `Emitted<OnChanged<Layout>>` seen: its targets.
+    /// Every `Emitted<OnChanged<ComputedLayout>>` seen: its targets.
     static MOVED: RefCell<Vec<Vec<NodeId>>> = const { RefCell::new(Vec::new()) };
     /// Every `Emitted<OnChanged<LayoutStyle>>` seen: its targets.
     static RESTYLED: RefCell<Vec<Vec<NodeId>>> = const { RefCell::new(Vec::new()) };
@@ -34,7 +34,7 @@ thread_local! {
 fn log_done(_: &mut App, d: &LayoutDone) {
     DONE.with(|l| l.borrow_mut().push(d.roots.clone()));
 }
-fn log_moved(_: &mut App, e: &Emitted<OnChanged<Layout>>) {
+fn log_moved(_: &mut App, e: &Emitted<OnChanged<ComputedLayout>>) {
     MOVED.with(|l| l.borrow_mut().push(e.targets.to_vec()));
 }
 fn log_restyled(_: &mut App, e: &Emitted<OnChanged<LayoutStyle>>) {
@@ -52,16 +52,11 @@ fn take_restyled() -> Vec<Vec<NodeId>> {
 
 /// An app with the module and the three logging systems.
 fn app() -> App {
-    app_with(false)
-}
-
-fn app_with(externally_driven: bool) -> App {
     let mut app = App::new();
     app.add_module(LayoutModule)
         .system(log_done)
         .system(log_moved)
         .system(log_restyled);
-    app.resource_mut::<LayoutControl>().externally_driven = externally_driven;
     app
 }
 
@@ -101,27 +96,6 @@ fn sorted(mut v: Vec<NodeId>) -> Vec<NodeId> {
 }
 
 // ── the module and the drain ────────────────────────────────────────────
-
-#[test]
-fn control_defaults_to_copying_and_is_read_on_each_pass() {
-    let mut app = App::new();
-    app.add_module(LayoutModule);
-    assert!(!app.resource::<LayoutControl>().externally_driven);
-    let r = root(&mut app, 50.0, 40.0);
-    app.tick();
-    assert_eq!(app.component::<Layout>(r).unwrap().rect.width(), 50.0);
-
-    app.resource_mut::<LayoutControl>().externally_driven = true;
-    app.component_mut::<LayoutStyle>(r).unwrap().width = px(80.0);
-    app.tick();
-    assert_eq!(rect(&app, r).width(), 80.0);
-    assert_eq!(app.component::<Layout>(r).unwrap().rect.width(), 50.0);
-
-    app.resource_mut::<LayoutControl>().externally_driven = false;
-    app.component_mut::<LayoutStyle>(r).unwrap().width = px(100.0);
-    app.tick();
-    assert_eq!(app.component::<Layout>(r).unwrap().rect.width(), 100.0);
-}
 
 #[test]
 fn a_tick_with_nothing_to_do_signals_an_empty_layout_done() {
@@ -165,25 +139,19 @@ fn measure_helpers() {
 }
 
 #[test]
-fn layout_content_is_inside_padding_and_border() {
+fn computed_layout_content_is_inside_padding_and_border() {
     let l = ComputedLayout {
         rect: Rect::new(10.0, 20.0, 100.0, 50.0),
         padding: Insets::new(1.0, 2.0, 3.0, 4.0),
         border: Insets::all(1.0),
     };
     assert_eq!(l.content(), Rect::new(15.0, 22.0, 92.0, 44.0));
-    let displayed = Layout::from(l);
-    assert_eq!(displayed.rect, l.rect);
-    assert_eq!(displayed.padding, l.padding);
-    assert_eq!(displayed.border, l.border);
-    assert_eq!(displayed.content(), l.content());
     let tiny = ComputedLayout {
         rect: Rect::new(0.0, 0.0, 10.0, 10.0),
         padding: Insets::all(8.0),
         border: Insets::all(0.0),
     };
     assert_eq!(tiny.content(), Rect::new(8.0, 8.0, 0.0, 0.0));
-    assert_eq!(Layout::from(tiny).content(), tiny.content());
     assert!(!LayoutDone { roots: vec![] }.recomputed());
     assert!(
         LayoutDone {
@@ -196,128 +164,6 @@ fn layout_content_is_inside_padding_and_border() {
 /// Any id will do for the signal's `recomputed`; the app root is always live.
 fn tiny_id() -> NodeId {
     App::new().root()
-}
-
-#[test]
-fn without_animation_displayed_layout_tracks_initial_and_updated_targets() {
-    let mut app = app();
-    let r = root(&mut app, 300.0, 100.0);
-    let a = child(&mut app, r, fixed(50.0, 40.0).padding_all(px(2.0)));
-    app.tick();
-    for id in [r, a] {
-        assert_eq!(
-            *app.component::<Layout>(id).unwrap(),
-            Layout::from(*app.component::<ComputedLayout>(id).unwrap())
-        );
-    }
-    take_moved();
-
-    *app.component_mut::<LayoutStyle>(a).unwrap() = fixed(80.0, 50.0)
-        .padding_all(px(4.0))
-        .border(Insets::all(px(1.0)));
-    app.tick();
-    let displayed = *app.component::<Layout>(a).unwrap();
-    assert_eq!(displayed.rect, Rect::new(0.0, 0.0, 80.0, 50.0));
-    assert_eq!(displayed.padding, Insets::all(4.0));
-    assert_eq!(displayed.border, Insets::all(1.0));
-    assert_eq!(
-        displayed,
-        Layout::from(*app.component::<ComputedLayout>(a).unwrap())
-    );
-    assert_eq!(take_moved(), vec![vec![a]]);
-    app.tick();
-    assert!(take_moved().is_empty());
-}
-
-#[test]
-fn first_actual_resolution_initializes_external_layout_even_when_target_is_zero() {
-    for size in [0.0, 40.0] {
-        let mut app = app_with(true);
-        let r = app.spawn_with(app.root(), Leaf, (fixed(size, size),)).id();
-        let seed = Layout {
-            rect: Rect::new(1.0, 2.0, 3.0, 4.0),
-            padding: Insets::all(1.0),
-            border: Insets::all(2.0),
-        };
-        *app.component_mut::<Layout>(r).unwrap() = seed;
-        app.tick();
-        assert_eq!(
-            *app.component::<Layout>(r).unwrap(),
-            seed,
-            "not resolved yet"
-        );
-
-        app.component_mut::<LayoutRoot>(r).unwrap().0 = true;
-        app.tick();
-        let initial = Layout {
-            rect: Rect::new(0.0, 0.0, size, size),
-            ..Layout::default()
-        };
-        assert_eq!(*app.component::<Layout>(r).unwrap(), initial);
-        assert_eq!(
-            initial,
-            Layout::from(*app.component::<ComputedLayout>(r).unwrap())
-        );
-
-        app.component_mut::<LayoutStyle>(r).unwrap().width = px(80.0);
-        app.tick();
-        assert_eq!(rect(&app, r).width(), 80.0);
-        assert_eq!(
-            *app.component::<Layout>(r).unwrap(),
-            initial,
-            "initialized only once"
-        );
-    }
-}
-
-#[test]
-fn external_layout_is_preserved_and_later_nodes_are_initialized() {
-    let mut app = app_with(true);
-    let r = root(&mut app, 300.0, 100.0);
-    let a = child(&mut app, r, fixed(50.0, 40.0));
-    app.tick();
-    assert_eq!(app.component::<Layout>(a).unwrap().rect.width(), 50.0);
-
-    app.component_mut::<LayoutStyle>(a).unwrap().width = px(80.0);
-    app.component_mut::<LayoutStyle>(r).unwrap().width = px(400.0);
-    app.tick();
-    assert_eq!(rect(&app, a).width(), 80.0);
-    assert_eq!(app.component::<Layout>(a).unwrap().rect.width(), 50.0);
-    assert_eq!(
-        app.component::<Layout>(r).unwrap().rect.width(),
-        300.0,
-        "external drivers own roots too"
-    );
-    app.component_mut::<Layout>(a).unwrap().rect.size.width = 65.0;
-    app.tick();
-    assert_eq!(app.component::<Layout>(a).unwrap().rect.width(), 65.0);
-
-    app.remove(a);
-    let b = child(&mut app, r, fixed(20.0, 30.0));
-    assert_eq!(a.slot(), b.slot(), "reuse the initialized node's slot");
-    app.tick();
-    assert_eq!(
-        app.component::<Layout>(b).unwrap().rect.width(),
-        20.0,
-        "initialization is per node, not per slot or app"
-    );
-}
-
-#[test]
-fn an_external_system_can_copy_targets_without_an_animation_module() {
-    let mut app = app_with(true);
-    app.system(|app, _: &LayoutDone| {
-        let (targets, mut displayed) = app.query::<(&ComputedLayout, &mut Layout)>();
-        for (id, target) in targets.iter() {
-            displayed.get_mut(id).unwrap().set_if_neq((*target).into());
-        }
-    });
-    let r = root(&mut app, 300.0, 100.0);
-    let a = child(&mut app, r, fixed(50.0, 40.0));
-    app.tick();
-    app.component_mut::<LayoutStyle>(a).unwrap().width = px(80.0);
-    app.tick();
-    assert_eq!(app.component::<Layout>(a).unwrap().rect.width(), 80.0);
 }
 
 // ── dirtiness ───────────────────────────────────────────────────────────
@@ -631,7 +477,7 @@ fn a_write_between_ticks_moves_the_box_next_tick_and_then_rests() {
 }
 
 #[test]
-fn on_changed_layout_names_only_the_boxes_that_changed() {
+fn on_changed_computed_layout_names_only_the_boxes_that_changed() {
     let mut app = app();
     let r = root(&mut app, 300.0, 100.0);
     let a = child(&mut app, r, fixed(50.0, 40.0));
@@ -707,7 +553,7 @@ fn two_roots_do_not_disturb_each_other() {
 }
 
 #[test]
-fn a_node_outside_every_root_keeps_a_zero_layout() {
+fn a_node_outside_every_root_keeps_a_zero_computed_layout() {
     let mut app = app();
     let stray = app.spawn_with(app.root(), Leaf, (fixed(50.0, 40.0),)).id();
     app.tick();

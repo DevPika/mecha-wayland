@@ -21,7 +21,7 @@ use taffy::{
 };
 
 use crate::style::{Display, LayoutStyle};
-use crate::{ComputedLayout, Constraints, Layout, Measure, Scratch};
+use crate::{ComputedLayout, Constraints, Measure, Scratch};
 
 /// Taffy's id for a node: its slot.
 pub(crate) fn taffy_id(id: NodeId) -> TaffyId {
@@ -42,9 +42,7 @@ pub(crate) struct LayoutTree<'a> {
     styles: Comps<'a, LayoutStyle>,
     measures: Comps<'a, Measure>,
     layouts: CompsMut<'a, ComputedLayout>,
-    displayed: CompsMut<'a, Layout>,
     scratch: CompsMut<'a, Scratch>,
-    externally_driven: bool,
 }
 
 impl<'a> LayoutTree<'a> {
@@ -54,9 +52,7 @@ impl<'a> LayoutTree<'a> {
         styles: Comps<'a, LayoutStyle>,
         measures: Comps<'a, Measure>,
         layouts: CompsMut<'a, ComputedLayout>,
-        displayed: CompsMut<'a, Layout>,
         scratch: CompsMut<'a, Scratch>,
-        externally_driven: bool,
     ) -> Self {
         let mut slots: Vec<Option<NodeId>> = Vec::new();
         for id in std::iter::once(root).chain(tree.descendants(root)) {
@@ -75,9 +71,7 @@ impl<'a> LayoutTree<'a> {
             styles,
             measures,
             layouts,
-            displayed,
             scratch,
-            externally_driven,
         }
     }
 
@@ -303,12 +297,6 @@ impl RoundTree for LayoutTree<'_> {
         };
         if let Some(mut slot) = self.layouts.get_mut(id) {
             slot.set_if_neq(value);
-        }
-        if let Some(mut scratch) = self.scratch.get_mut(id)
-            && (!scratch.initialized || !self.externally_driven)
-        {
-            self.displayed.get_mut(id).unwrap().set_if_neq(value.into());
-            scratch.initialized = true;
         }
     }
 }

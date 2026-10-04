@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! The layout module: `LayoutStyle` and `Measure` in, `Layout` out,
+//! The layout module: `LayoutStyle` and `Measure` in, `ComputedLayout` out,
 //! through taffy's flexbox and block algorithms over the core's columns.
 //!
 //! # Model
@@ -12,9 +12,8 @@
 //!   at the origin, sized by the root's own style. A node under no root is
 //!   never laid out.
 //! - Every node carries a [`ComputedLayout`], the target box in whole
-//!   pixels, and a [`Layout`], the displayed box. The first resolution
-//!   initializes both. Later resolutions also copy the displayed box unless
-//!   [`LayoutControl::externally_driven`] leaves it to another module.
+//!   pixels. The animation module maintains the separate displayed
+//!   `animation::Layout`, copying targets when animation is disabled.
 //! - The pass runs on `PostTick`, ahead of the core's `OnChanged` drains,
 //!   and takes the change records for the three inputs itself, so
 //!   `OnChanged<LayoutStyle>`, `OnChanged<Measure>` and
@@ -57,12 +56,12 @@
 //! let panel = app.spawn_with(window, Leaf, (LayoutStyle::default().size(px(50.0), percent(100.0)),));
 //!
 //! app.tick();
-//! assert_eq!(app.component::<Layout>(panel).unwrap().rect, Rect::new(0.0, 0.0, 50.0, 100.0));
+//! assert_eq!(app.component::<ComputedLayout>(panel).unwrap().rect, Rect::new(0.0, 0.0, 50.0, 100.0));
 //!
 //! // Restyle between ticks; the next tick lays it out.
 //! app.component_mut::<LayoutStyle>(panel).unwrap().width = px(80.0);
 //! app.tick();
-//! assert_eq!(app.component::<Layout>(panel).unwrap().rect.width(), 80.0);
+//! assert_eq!(app.component::<ComputedLayout>(panel).unwrap().rect.width(), 80.0);
 //! ```
 
 mod context;
@@ -87,8 +86,8 @@ use tree::{LayoutTree, taffy_id};
 
 pub mod prelude {
     pub use crate::{
-        Align, Available, ComputedLayout, Constraints, Direction, Display, Justify, Layout,
-        LayoutControl, LayoutDone, LayoutModule, LayoutRoot, LayoutStyle, Measure, Position,
+        Align, Available, ComputedLayout, Constraints, Direction, Display, Justify, LayoutDone,
+        LayoutModule, LayoutRoot, LayoutStyle, Measure, Position,
         StyleContext, Val, Wrap, auto, percent, px,
     };
 }
@@ -220,13 +219,13 @@ impl fmt::Debug for Measure {
 }
 
 // ---------------------------------------------------------------------------
-// LayoutRoot, ComputedLayout, Layout
+// LayoutRoot, ComputedLayout
 // ---------------------------------------------------------------------------
 
 /// Marks the top of one independently laid-out tree. Only the subtree
 /// under a true root is laid out, with the root's box at the origin of
 /// its own coordinates, sized by its own style. A node under no root keeps
-/// its default [`Layout`]. A root's subtree must not contain another root.
+/// its default [`ComputedLayout`]. A root's subtree must not contain another root.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct LayoutRoot(pub bool);
 
@@ -257,57 +256,6 @@ impl ComputedLayout {
     }
 }
 
-/// The displayed box in its layout root's coordinates. Initialized from
-/// [`ComputedLayout`] on first resolution, then copied on later resolutions
-/// unless [`LayoutControl::externally_driven`] is set. Renderers read this
-/// box; external systems may write fractional pixel values.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Layout {
-    pub rect: Rect,
-    pub padding: Insets<f32>,
-    pub border: Insets<f32>,
-}
-
-impl Component for Layout {}
-
-impl From<ComputedLayout> for Layout {
-    fn from(value: ComputedLayout) -> Self {
-        Self {
-            rect: value.rect,
-            padding: value.padding,
-            border: value.border,
-        }
-    }
-}
-
-impl Layout {
-    /// The rect inside padding and border, each dimension clamped at zero.
-    pub fn content(&self) -> Rect {
-        self.rect.inset(Insets::new(
-            self.padding.top + self.border.top,
-            self.padding.right + self.border.right,
-            self.padding.bottom + self.border.bottom,
-            self.padding.left + self.border.left,
-        ))
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Layout control
-// ---------------------------------------------------------------------------
-
-/// Controls who maintains displayed layouts after their first resolution.
-/// Initialized by [`LayoutModule`]; an external driver can claim subsequent
-/// updates by setting `externally_driven` during its own installation.
-#[derive(Default)]
-pub struct LayoutControl {
-    /// False by default: copy every resolved target into `Layout`. When true,
-    /// the external driver must maintain all displayed layouts, including roots.
-    pub externally_driven: bool,
-}
-
-impl Resource for LayoutControl {}
-
 // ---------------------------------------------------------------------------
 // Private state
 // ---------------------------------------------------------------------------
@@ -323,15 +271,13 @@ impl Resource for LayoutControl {}
 /// which is what keeps rounding errors from accumulating. `pass` is the
 /// number of the pass that last set `abs`, so the walk can check a
 /// parent was visited before its child; both are only meaningful within
-/// the pass that wrote them. `initialized` records the first actual
-/// resolution, even when the resolved box equals the default.
+/// the pass that wrote them.
 #[derive(Default)]
 pub(crate) struct Scratch {
     pub(crate) cache: taffy::tree::Cache,
     pub(crate) unrounded: taffy::tree::Layout,
     pub(crate) abs: geometry::Point,
     pub(crate) pass: u32,
-    pub(crate) initialized: bool,
 }
 
 impl Component for Scratch {}
@@ -383,9 +329,7 @@ impl Module for LayoutModule {
             .register_component::<Measure>()
             .register_component::<LayoutRoot>()
             .register_component::<ComputedLayout>()
-            .register_component::<Layout>()
             .register_component::<Scratch>()
-            .init_resource::<LayoutControl>()
             .init_resource::<DirtyRoots>()
             .system(on_spawned)
             .system(on_removed);
@@ -397,9 +341,8 @@ impl Module for LayoutModule {
 fn pass(app: &mut App, _: &PostTick) {
     drain(app);
     let roots = take_dirty_roots(app);
-    let externally_driven = app.resource::<LayoutControl>().externally_driven;
     for &root in &roots {
-        layout_root(app, root, externally_driven);
+        layout_root(app, root);
     }
     // The pass wrote `Scratch` through flagging guards, and `Scratch`'s
     // drain runs after this system; taking the record here means that
@@ -409,27 +352,16 @@ fn pass(app: &mut App, _: &PostTick) {
 }
 
 /// One pass over `root`'s subtree. The root is offered max-content space
-/// and sized by its own style. `round_layout` writes every target and
-/// initializes displayed boxes on first resolution.
-fn layout_root(app: &mut App, root: NodeId, externally_driven: bool) {
+/// and sized by its own style. `round_layout` writes every target.
+fn layout_root(app: &mut App, root: NodeId) {
     let (tree, mut data) = app.split();
-    let (styles, measures, layouts, displayed, scratch) = data.query::<(
+    let (styles, measures, layouts, scratch) = data.query::<(
         &LayoutStyle,
         &Measure,
         &mut ComputedLayout,
-        &mut Layout,
         &mut Scratch,
     )>();
-    let mut view = LayoutTree::new(
-        tree,
-        root,
-        styles,
-        measures,
-        layouts,
-        displayed,
-        scratch,
-        externally_driven,
-    );
+    let mut view = LayoutTree::new(tree, root, styles, measures, layouts, scratch);
     let id = taffy_id(root);
     compute_root_layout(&mut view, id, TSize::MAX_CONTENT);
     round_layout(&mut view, id);

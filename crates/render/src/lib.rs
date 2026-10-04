@@ -98,10 +98,9 @@
 //! assert_eq!(quad.kind(), Command::QUAD);
 //! ```
 
-use animation::AnimatedPaint;
+use animation::{AnimatedPaint, Layout};
 use app::prelude::*;
 use geometry::{Color, Corners, Insets, Rect, Size};
-use layout::Layout;
 use paint::{AtlasId, AtlasTile};
 use window::{Frame, InWindow, RequestFrame, Window};
 

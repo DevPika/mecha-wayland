@@ -16,8 +16,49 @@
 //!   `Button` also requires `InteractivityModule`.
 //! - Mutation after spawn happens through each widget's own `*Context`
 //!   trait ([`DivContext`], [`ButtonContext`], [`TextContext`],
-//!   [`IconContext`], [`ImageContext`], [`InputContext`]), plus the generic
-//!   `layout::StyleContext` and `paint::PaintContext`.
+//!   [`IconContext`], [`ImageContext`], [`InputContext`]),
+//!   plus the generic `layout::StyleContext` and
+//!   `paint::PaintContext`, which apply to every widget.
+//!
+//! # Quick start
+//!
+//! ```
+//! use app::prelude::*;
+//! use atlas::prelude::*;
+//! use layout::prelude::*;
+//! use paint::prelude::*;
+//! use widgets::prelude::*;
+//!
+//! let mut app = App::new();
+//! app.add_module(LayoutModule).add_module(PaintModule);
+//! app.insert_resource(Atlas::new());
+//!
+//! let root = app.spawn_with(
+//!     app.root(),
+//!     div().style(LayoutStyle::default().size(px(200.0), px(100.0))),
+//!     (LayoutRoot(true),),
+//! );
+//!
+//! let font = app
+//!     .resource_mut::<Atlas>()
+//!     .add_font(include_bytes!("../../atlas/tests/fixtures/Inter-Regular.ttf"))
+//!     .unwrap();
+//! let sprite = app
+//!     .resource_mut::<Atlas>()
+//!     .insert(
+//!         Class::Icon,
+//!         &Bitmap { width: 8, height: 8, format: Format::R8, pixels: vec![255; 64] },
+//!     )
+//!     .unwrap();
+//!
+//! let label = app.spawn(root, text(font, "hi"));
+//! let glyph = app.spawn(root, icon(sprite));
+//!
+//! app.tick();
+//! assert!(app.component::<ComputedLayout>(label).unwrap().rect.width() > 0.0);
+//! assert!(app.component::<ComputedLayout>(glyph).unwrap().rect.width() > 0.0);
+//! ```
+>>>>>>> a03cde3 (fix(animation): Make Layout follow the same logic as Paint)
 
 mod button;
 mod div;

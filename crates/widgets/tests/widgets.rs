@@ -1,5 +1,5 @@
 //! The four primitive widgets end to end: spawned, ticked, their
-//! `Context` setters exercised, `OnChanged<Paint>`/`OnChanged<Layout>`
+//! `Context` setters exercised, `OnChanged<Paint>`/`OnChanged<ComputedLayout>`
 //! observed.
 
 use std::cell::RefCell;
@@ -16,7 +16,7 @@ use widgets::prelude::*;
 thread_local! {
     /// Every `Emitted<OnChanged<Paint>>` seen: its targets.
     static PAINTED: RefCell<Vec<Vec<NodeId>>> = const { RefCell::new(Vec::new()) };
-    /// Every `Emitted<OnChanged<Layout>>` seen: its targets.
+    /// Every `Emitted<OnChanged<ComputedLayout>>` seen: its targets.
     static MOVED: RefCell<Vec<Vec<NodeId>>> = const { RefCell::new(Vec::new()) };
 }
 

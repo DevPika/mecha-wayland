@@ -2,12 +2,11 @@
 //! Duration- or speed-based transitions from Taffy's [`ComputedLayout`] to displayed [`Layout`].
 //!
 //! Install after `LayoutModule` and `WindowModule`, and before `RenderModule`.
-//! Installation sets `LayoutControl::externally_driven` automatically. This
-//! module then maintains all displayed layouts: nonanimated nodes copy their
+//! This module maintains all displayed layouts: nonanimated nodes copy their
 //! targets, while animated nodes interpolate.
 //! Settings inherit from the nearest configured ancestor; a zero duration
 //! overrides inheritance and snaps. Layout roots always snap. The first layout
-//! resolution is copied immediately by the layout module. Later resolutions,
+//! resolution is copied immediately by the animation module. Later resolutions,
 //! including a compositor resize during startup, can start transitions.
 //!
 //! After each layout pass, changed targets start transitions and active windows
@@ -32,7 +31,7 @@
 //!
 //! ```text
 //! PostTick:   layout resolves targets and queues LayoutDone; Time is sampled
-//! LayoutDone: copy nonanimated targets, prepare transitions, request frames
+//! LayoutDone: copy nonanimated targets, prepare transitions, notify, request frames
 //! Frame(w):   sample Time, advance w's transitions, then render w
 //! ```
 //!
@@ -40,23 +39,27 @@
 //! operations. The platform decides when requested frames can run. [`Time`]
 //! only samples the clock; it does not install a timer or wake the runner.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use app::prelude::*;
 use geometry::{Insets, Rect};
-use layout::{ComputedLayout, Layout, LayoutControl, LayoutDone, LayoutRoot};
+use layout::{ComputedLayout, LayoutDone, LayoutRoot};
 use window::{Frame, InWindow, RequestFrame};
 
+mod displayed_layout;
 mod paint;
 mod time;
 
+pub use displayed_layout::Layout;
 pub use paint::{AnimatedPaint, PaintTransition};
 pub use time::Time;
 
 /// The animation types normally imported by a consumer.
 pub mod prelude {
     pub use crate::{
-        AnimatedPaint, AnimationModule, AnimationSettings, AnimationTime, PaintTransition, Time,
+        AnimatedPaint, AnimationModule, AnimationSettings, AnimationTime, Layout, PaintTransition,
+        Time,
     };
 }
 
@@ -134,11 +137,14 @@ struct Settings {
     easing: fn(f32) -> f32,
 }
 
-/// Per-node runtime state: `None` is idle, `Some` is a transition in progress.
-/// Keeping the active data optional avoids dummy start times and layouts on
-/// nodes that have never animated. The component resets when its node is removed.
+/// Per-node runtime state. A node is unresolved until its layout root's pass
+/// first visits it, even when that pass produces the default zero-sized box.
+/// Running data is absent when idle and resets when the node is removed.
 #[derive(Default)]
-struct Transition(Option<Running>);
+struct Transition {
+    resolved: bool,
+    running: Option<Running>,
+}
 impl Component for Transition {}
 
 /// A transition's fixed starting point, destination, clock origin and settings.
@@ -155,8 +161,8 @@ struct Running {
 /// Installs the clock, settings and transition components, and animation systems.
 ///
 /// Install after `layout::LayoutModule` and `window::WindowModule`, and before
-/// the renderer. Installation claims displayed-layout updates through
-/// [`LayoutControl`]; layout still initializes every node's first resolved box.
+/// the renderer. Layout only produces targets; this module initializes and
+/// maintains their displayed values.
 ///
 /// The systems sample [`Time`] on [`PostTick`] and [`Frame`], reconcile layout
 /// targets on [`LayoutDone`], and prepare paint transitions when target paint
@@ -164,13 +170,13 @@ struct Running {
 /// There is no independent timer or frame-rate loop here.
 pub struct AnimationModule;
 impl Module for AnimationModule {
-    /// Claim displayed layouts and register the systems in execution order.
+    /// Register displayed layouts and the systems in execution order.
     fn install(self, app: &mut App) {
-        app.resource_mut::<LayoutControl>().externally_driven = true;
         app.init_resource::<Time>()
             .system::<PostTick>(time::update_time)
             .system::<Frame>(time::update_time)
             .register_component::<AnimationSettings>()
+            .register_component::<Layout>()
             .register_component::<Transition>()
             .register_component::<AnimatedPaint>()
             .register_component::<PaintTransition>()
@@ -210,12 +216,22 @@ fn settings(app: &App, id: NodeId) -> Option<Settings> {
 /// after layout and the clock; this signal explicitly uses layout's completion
 /// point instead. Writes here are after the normal `Layout` change drain.
 ///
-/// The signal's dirty-root list is deliberately unused: settings can change
-/// without any layout recomputation, and active animations still need frames
-/// on clean ticks. Positive timing/easing changes alone do not replace a
+/// The recomputed roots identify nodes receiving their first resolution, even
+/// if their target stayed zero. All nodes are still reconciled on clean ticks:
+/// settings can change without layout recomputation, and active animations
+/// still need frames. Positive timing/easing changes alone do not replace a
 /// running transition; it keeps its captured settings until its target changes.
-fn on_layout_done(app: &mut App, _: &LayoutDone) {
+/// Copies made after the normal `Layout` drain are emitted here, so consumers
+/// see initial and snapped layouts before the requested frame.
+fn on_layout_done(app: &mut App, done: &LayoutDone) {
     let now = app.resource::<Time>().now();
+    // A zero-sized first resolution produces no ComputedLayout change event.
+    // LayoutDone identifies the entire subtree visited by each layout pass.
+    let resolved_this_pass: HashSet<NodeId> = done
+        .roots
+        .iter()
+        .flat_map(|&root| std::iter::once(root).chain(app.descendants(root)))
+        .collect();
     let nodes: Vec<NodeId> = std::iter::once(app.root())
         .chain(app.descendants(app.root()))
         .collect();
@@ -223,6 +239,20 @@ fn on_layout_done(app: &mut App, _: &LayoutDone) {
     for id in nodes {
         let target = Layout::from(*app.component::<ComputedLayout>(id).unwrap());
         let window = app.component::<InWindow>(id).unwrap().0;
+        if !app.component::<Transition>(id).unwrap().resolved {
+            if !resolved_this_pass.contains(&id) {
+                continue;
+            }
+            app.component_mut::<Transition>(id).unwrap().resolved = true;
+            let changed = app.component_mut::<Layout>(id).unwrap().set_if_neq(target);
+            if changed
+                && let Some(window) = window
+                && !windows.contains(&window)
+            {
+                windows.push(window);
+            }
+            continue;
+        }
         let configuration = settings(app, id).filter(|s| {
             !matches!(s.time, AnimationTime::Duration(d) if d.is_zero())
                 && window.is_some()
@@ -230,9 +260,9 @@ fn on_layout_done(app: &mut App, _: &LayoutDone) {
         });
         let Some(configuration) = configuration else {
             let changed = app.component_mut::<Layout>(id).unwrap().set_if_neq(target);
-            app.component_mut::<Transition>(id).unwrap().0 = None;
-            // Layout's change drain already ran. Request now rather than
-            // waiting for another tick to display this copy.
+            app.component_mut::<Transition>(id).unwrap().running = None;
+            // Request directly even without a renderer listening to the
+            // change notification queued below.
             if changed
                 && let Some(window) = window
                 && !windows.contains(&window)
@@ -244,7 +274,7 @@ fn on_layout_done(app: &mut App, _: &LayoutDone) {
         let current = *app.component::<Layout>(id).unwrap();
         let window = window.unwrap();
         let mut transition = app.component_mut::<Transition>(id).unwrap();
-        if transition.0.as_ref().is_some_and(|t| t.target == target) {
+        if transition.running.as_ref().is_some_and(|t| t.target == target) {
             // Keep the original start and clock across clean layout passes.
         } else if current != target {
             let duration = match configuration.time {
@@ -274,7 +304,7 @@ fn on_layout_done(app: &mut App, _: &LayoutDone) {
                         .unwrap_or(Duration::MAX)
                 }
             };
-            transition.0 = Some(Running {
+            transition.running = Some(Running {
                 from: current,
                 target,
                 started: now,
@@ -282,14 +312,22 @@ fn on_layout_done(app: &mut App, _: &LayoutDone) {
                 easing: configuration.easing,
             });
         } else {
-            transition.0 = None;
+            transition.running = None;
         }
-        if transition.0.is_some() && !windows.contains(&window) {
+        if transition.running.is_some() && !windows.contains(&window) {
             windows.push(window);
         }
     }
     // Transition is private bookkeeping, not a consumer-facing change event.
     app.take_changed::<Transition>().for_each(drop);
+
+    // The normal PostTick drain already ran. Notify consumers about displayed
+    // Layout writes made here now, and clear their records so they don't fire
+    // again on the next tick. This includes later snaps, not just first copies.
+    let changed: Vec<NodeId> = app.take_changed::<Layout>().collect();
+    if !changed.is_empty() {
+        app.emit(OnChanged::<Layout>::new(), changed);
+    }
     for window in windows {
         app.signal(RequestFrame(window));
     }
@@ -315,7 +353,7 @@ fn advance(app: &mut App, window: NodeId, now: Instant) {
         if membership[id].0 != Some(window) {
             continue;
         }
-        let Some(running) = &transition.0 else {
+        let Some(running) = &transition.running else {
             continue; // skip everything that doesn't have a currently running animation
         };
         let elapsed = now.duration_since(running.started);
@@ -328,7 +366,7 @@ fn advance(app: &mut App, window: NodeId, now: Instant) {
         };
         layouts.get_mut(id).unwrap().set_if_neq(value); // set the layout here
         if finished {
-            transition.0 = None;
+            transition.running = None;
         }
     }
     drop((membership, layouts, transitions));

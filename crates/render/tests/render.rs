@@ -3,7 +3,7 @@
 
 use std::cell::RefCell;
 
-use animation::{AnimatedPaint, AnimationModule, AnimationSettings, AnimationTime};
+use animation::{AnimatedPaint, AnimationModule, AnimationSettings, AnimationTime, Layout};
 use app::prelude::*;
 use geometry::{Color, Corners, Insets, Point, Rect, Size};
 use layout::prelude::*;
@@ -50,7 +50,7 @@ const HALF_BLUE: Color = Color::rgba(0.0, 0.0, 1.0, 0.5);
 
 /// Layout, paint, animation, window and render, `buffers` frames of damage, the loop
 /// closed by `answer`, requests logged.
-fn app_with(buffers: usize, externally_driven: bool) -> App {
+fn app_with(buffers: usize) -> App {
     let mut app = App::new();
     app.add_module(LayoutModule)
         .add_module(PaintModule)
@@ -59,12 +59,11 @@ fn app_with(buffers: usize, externally_driven: bool) -> App {
         .add_module(RenderModule { buffers })
         .system(log_requested)
         .system(answer);
-    app.resource_mut::<LayoutControl>().externally_driven = externally_driven;
     app
 }
 
 fn app() -> App {
-    app_with(2, false)
+    app_with(2)
 }
 
 /// A 200 by 100 window cleared to black: everything at the top level has
@@ -846,7 +845,7 @@ fn a_hidden_node_damages_its_old_rect_and_draws_nothing() {
 
 #[test]
 fn a_write_after_the_drain_is_drawn_and_damaged_by_the_frame_that_draws_it() {
-    let mut app = app_with(2, true);
+    let mut app = app_with(2);
     let (win, a, _) = two_quads(&mut app);
 
     // A `Layout` written between the drain and the frame: nothing marked
@@ -871,7 +870,7 @@ fn a_write_after_the_drain_is_drawn_and_damaged_by_the_frame_that_draws_it() {
 
 #[test]
 fn renderer_reads_displayed_window_and_content_geometry_not_targets() {
-    let mut app = app_with(2, true);
+    let mut app = app_with(2);
     let win = app.spawn(app.root(), a_window());
     let image = app.spawn_with(
         win,
@@ -926,7 +925,6 @@ fn frame_time_layout_changes_damage_equal_bounds() {
         .add_module(RenderModule::default())
         .system(log_requested)
         .system(answer);
-    app.resource_mut::<LayoutControl>().externally_driven = true;
     let (win, a, _) = two_quads(&mut app);
     let initial = *app.component::<Layout>(a).unwrap();
     for layout in [
@@ -982,7 +980,7 @@ fn a_clean_frame_has_nothing_to_do_and_a_clean_tick_asks_for_nothing() {
 
 #[test]
 fn ages_union_the_frames_held_and_anything_else_is_the_window() {
-    let mut app = app_with(2, false);
+    let mut app = app_with(2);
     let (win, a, b) = two_quads(&mut app);
 
     app.component_mut::<AnimatedPaint>(a).unwrap().0 = Paint::Quad(Quad::new(BLUE));

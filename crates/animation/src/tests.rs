@@ -68,19 +68,184 @@ fn scene(app: &mut App) -> (NodeId, Handle<Leaf>) {
 fn start(app: &App, node: impl Into<NodeId>) -> Instant {
     app.component::<Transition>(node)
         .unwrap()
-        .0
+        .running
         .as_ref()
         .unwrap()
         .started
 }
 
 #[test]
-fn installation_claims_displayed_updates_automatically() {
+fn animation_registers_displayed_layout() {
     let mut app = App::new();
     app.add_module(LayoutModule).add_module(WindowModule);
-    assert!(!app.resource::<LayoutControl>().externally_driven);
     app.add_module(AnimationModule);
-    assert!(app.resource::<LayoutControl>().externally_driven);
+    assert_eq!(
+        app.component::<Layout>(app.root()),
+        Some(&Layout::default())
+    );
+}
+
+#[test]
+fn first_resolution_snaps_even_when_the_target_does_not_change_from_zero() {
+    let mut app = app();
+    let window = app.spawn(app.root(), window());
+    let panel = app.spawn_with(
+        window,
+        Leaf,
+        (
+            animated(1000, |t| t),
+            LayoutStyle::default().size(px(0.0), px(0.0)),
+        ),
+    );
+    app.tick();
+    assert_eq!(
+        *app.component::<ComputedLayout>(panel).unwrap(),
+        ComputedLayout::default()
+    );
+    assert!(app.component::<Transition>(panel).unwrap().resolved);
+    assert!(
+        app.component::<Transition>(panel)
+            .unwrap()
+            .running
+            .is_none()
+    );
+
+    app.component_mut::<LayoutStyle>(panel).unwrap().width = px(100.0);
+    app.tick();
+    assert_eq!(app.component::<Layout>(panel).unwrap().rect.width(), 0.0);
+    assert_eq!(
+        app.component::<ComputedLayout>(panel).unwrap().rect.width(),
+        100.0
+    );
+    assert!(
+        app.component::<Transition>(panel)
+            .unwrap()
+            .running
+            .is_some()
+    );
+}
+
+#[test]
+fn marking_a_root_later_initializes_only_its_resolved_subtree() {
+    let mut app = app();
+    let stray = app.spawn(app.root(), Leaf);
+    let root = app
+        .spawn_with(
+            app.root(),
+            Leaf,
+            (LayoutStyle::default().size(px(200.0), px(100.0)),),
+        )
+        .id();
+    let panel = app.spawn_with(
+        root,
+        Leaf,
+        (
+            animated(1000, |t| t),
+            LayoutStyle::default().size(px(40.0), px(30.0)),
+        ),
+    );
+    app.tick();
+    assert!(!app.component::<Transition>(root).unwrap().resolved);
+    assert!(!app.component::<Transition>(panel).unwrap().resolved);
+    assert!(!app.component::<Transition>(stray).unwrap().resolved);
+    assert_eq!(*app.component::<Layout>(panel).unwrap(), Layout::default());
+
+    app.component_mut::<LayoutRoot>(root).unwrap().0 = true;
+    app.tick();
+    for id in [root, panel.id()] {
+        assert!(app.component::<Transition>(id).unwrap().resolved);
+        assert_eq!(
+            *app.component::<Layout>(id).unwrap(),
+            Layout::from(*app.component::<ComputedLayout>(id).unwrap())
+        );
+        assert!(app.component::<Transition>(id).unwrap().running.is_none());
+    }
+    assert!(!app.component::<Transition>(stray).unwrap().resolved);
+
+    app.component_mut::<LayoutStyle>(panel).unwrap().width = px(80.0);
+    app.tick();
+    assert!(
+        app.component::<Transition>(panel)
+            .unwrap()
+            .running
+            .is_none()
+    );
+    // The node has no window, so subsequent changes copy instead of animating.
+    assert_eq!(app.component::<Layout>(panel).unwrap().rect.width(), 80.0);
+}
+
+#[test]
+fn first_resolved_layout_notifies_consumers_in_the_same_tick() {
+    #[derive(Default)]
+    struct Changes(Vec<Vec<NodeId>>);
+    impl Resource for Changes {}
+
+    let mut app = app();
+    app.init_resource::<Changes>()
+        .system(|app, event: &Emitted<OnChanged<Layout>>| {
+            app.resource_mut::<Changes>().0.push(event.targets.to_vec());
+        });
+    let window = app.spawn(
+        app.root(),
+        window().layout(LayoutStyle::default().size(px(200.0), px(100.0))),
+    );
+    let panel = app.spawn_with(
+        window,
+        Leaf,
+        (LayoutStyle::default().size(px(20.0), px(10.0)),),
+    );
+    app.tick();
+    let changes = &app.resource::<Changes>().0;
+    assert_eq!(changes, &[vec![window.id(), panel.id()]]);
+    app.resource_mut::<Changes>().0.clear();
+    app.tick();
+    assert!(app.resource::<Changes>().0.is_empty());
+}
+
+#[test]
+fn a_new_node_resolves_independently_of_a_reused_slot() {
+    let mut app = app();
+    let (window, old) = scene(&mut app);
+    app.emit(MoveTo(100.0), old);
+    app.tick();
+    assert!(app.component::<Transition>(old).unwrap().running.is_some());
+    app.remove(old);
+    let replacement = app.spawn_with(
+        window,
+        Leaf,
+        (
+            animated(1000, |t| t),
+            LayoutStyle::default().size(px(20.0), px(30.0)),
+        ),
+    );
+    assert_eq!(old.id().slot(), replacement.id().slot());
+    assert!(!app.component::<Transition>(replacement).unwrap().resolved);
+    app.tick();
+    assert!(app.component::<Transition>(replacement).unwrap().resolved);
+    assert!(
+        app.component::<Transition>(replacement)
+            .unwrap()
+            .running
+            .is_none()
+    );
+    assert_eq!(
+        app.component::<Layout>(replacement).unwrap().rect.width(),
+        20.0
+    );
+}
+
+#[test]
+fn displayed_layout_has_the_same_fields_and_content_box_as_the_target() {
+    let target = ComputedLayout {
+        rect: Rect::new(10.0, 20.0, 100.0, 50.0),
+        padding: Insets::new(1.0, 2.0, 3.0, 4.0),
+        border: Insets::all(1.0),
+    };
+    let displayed = Layout::from(target);
+    assert_eq!(displayed.rect, target.rect);
+    assert_eq!(displayed.padding, target.padding);
+    assert_eq!(displayed.border, target.border);
+    assert_eq!(displayed.content(), target.content());
 }
 
 #[test]
@@ -92,7 +257,12 @@ fn first_resolution_snaps_then_an_event_starts_a_duration_transition() {
         initial,
         Layout::from(*app.component::<ComputedLayout>(panel).unwrap())
     );
-    assert!(app.component::<Transition>(panel).unwrap().0.is_none());
+    assert!(
+        app.component::<Transition>(panel)
+            .unwrap()
+            .running
+            .is_none()
+    );
 
     app.emit(MoveTo(100.0), panel);
     app.tick();
@@ -111,7 +281,12 @@ fn first_resolution_snaps_then_an_event_starts_a_duration_transition() {
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 25.0);
     advance(&mut app, window, started + Duration::from_secs(1));
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 100.0);
-    assert!(app.component::<Transition>(panel).unwrap().0.is_none());
+    assert!(
+        app.component::<Transition>(panel)
+            .unwrap()
+            .running
+            .is_none()
+    );
 
     // Close pending demand after the final displayed value.
     app.signal(Frame(window));
@@ -137,7 +312,12 @@ fn nonanimated_nodes_copy_and_request_a_frame_in_the_same_tick() {
     app.emit(MoveTo(100.0), panel);
     app.tick();
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 100.0);
-    assert!(app.component::<Transition>(panel).unwrap().0.is_none());
+    assert!(
+        app.component::<Transition>(panel)
+            .unwrap()
+            .running
+            .is_none()
+    );
     assert_eq!(app.resource::<Requests>().0, [window]);
 
     app.signal(Frame(window));
@@ -180,7 +360,12 @@ fn children_inherit_and_explicit_settings_override() {
         ),
     );
     app.tick();
-    assert!(app.component::<Transition>(inherited).unwrap().0.is_none());
+    assert!(
+        app.component::<Transition>(inherited)
+            .unwrap()
+            .running
+            .is_none()
+    );
     app.emit(MoveTo(100.0), panel);
     app.tick();
     let started = start(&app, panel);
@@ -209,7 +394,12 @@ fn zero_duration_disables_inheritance_and_syncs_without_relayout() {
     *app.component_mut::<AnimationSettings>(panel).unwrap() = animated(0, |t| t);
     app.tick();
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 100.0);
-    assert!(app.component::<Transition>(panel).unwrap().0.is_none());
+    assert!(
+        app.component::<Transition>(panel)
+            .unwrap()
+            .running
+            .is_none()
+    );
 
     let child = app.spawn_with(
         panel,
@@ -220,7 +410,12 @@ fn zero_duration_disables_inheritance_and_syncs_without_relayout() {
     app.emit(MoveTo(200.0), panel);
     app.tick();
     assert_eq!(app.component::<Layout>(child).unwrap().rect.x(), 200.0);
-    assert!(app.component::<Transition>(child).unwrap().0.is_none());
+    assert!(
+        app.component::<Transition>(child)
+            .unwrap()
+            .running
+            .is_none()
+    );
 }
 
 #[test]
@@ -237,7 +432,12 @@ fn new_settings_and_style_in_the_same_tick_do_not_snap_the_target() {
         app.component::<ComputedLayout>(panel).unwrap().rect.x(),
         100.0
     );
-    assert!(app.component::<Transition>(panel).unwrap().0.is_some());
+    assert!(
+        app.component::<Transition>(panel)
+            .unwrap()
+            .running
+            .is_some()
+    );
 }
 
 #[test]
@@ -257,7 +457,7 @@ fn frame_updates_only_its_window_and_removed_slots_do_not_inherit_transitions() 
     assert!(
         app.component::<Transition>(replacement)
             .unwrap()
-            .0
+            .running
             .is_none()
     );
     app.tick();
@@ -272,11 +472,16 @@ fn window_roots_snap_and_frame_animation_reaches_the_target() {
     app.emit(MoveTo(100.0), panel);
     app.tick();
     assert_eq!(app.component::<Layout>(window).unwrap().rect.width(), 500.0);
-    assert!(app.component::<Transition>(window).unwrap().0.is_none());
+    assert!(
+        app.component::<Transition>(window)
+            .unwrap()
+            .running
+            .is_none()
+    );
     // Backdate instead of sleeping to exercise the real Frame systems.
     app.component_mut::<Transition>(panel)
         .unwrap()
-        .0
+        .running
         .as_mut()
         .unwrap()
         .started = Instant::now() - Duration::from_secs(2);
@@ -317,7 +522,7 @@ fn speed_derives_duration_from_distance_and_retains_easing() {
             let running = app
                 .component::<Transition>(panel)
                 .unwrap()
-                .0
+                .running
                 .as_ref()
                 .unwrap();
             assert_eq!(running.duration, duration);
@@ -334,7 +539,12 @@ fn speed_derives_duration_from_distance_and_retains_easing() {
                 app.component::<Layout>(panel).unwrap().rect.x(),
                 destination
             );
-            assert!(app.component::<Transition>(panel).unwrap().0.is_none());
+            assert!(
+                app.component::<Transition>(panel)
+                    .unwrap()
+                    .running
+                    .is_none()
+            );
         }
     }
 }
@@ -370,7 +580,7 @@ fn speed_distance_accounts_for_every_layout_field() {
         let running = app
             .component::<Transition>(panel)
             .unwrap()
-            .0
+            .running
             .as_ref()
             .unwrap();
         assert_eq!(
@@ -406,7 +616,7 @@ fn speed_uses_one_duration_for_all_fields_not_diagonal_distance() {
     let running = app
         .component::<Transition>(panel)
         .unwrap()
-        .0
+        .running
         .as_ref()
         .unwrap();
     assert_eq!(running.duration, Duration::from_secs(1));
@@ -441,7 +651,7 @@ fn speed_retargeting_uses_displayed_layout_and_new_settings() {
     let running = app
         .component::<Transition>(panel)
         .unwrap()
-        .0
+        .running
         .as_ref()
         .unwrap();
     assert_eq!(running.started, started);
@@ -453,7 +663,7 @@ fn speed_retargeting_uses_displayed_layout_and_new_settings() {
     let running = app
         .component::<Transition>(panel)
         .unwrap()
-        .0
+        .running
         .as_ref()
         .unwrap();
     assert_eq!(running.from.rect.x(), 50.0);
@@ -463,7 +673,12 @@ fn speed_retargeting_uses_displayed_layout_and_new_settings() {
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 25.0);
     advance(&mut app, window, started + Duration::from_millis(500));
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), -50.0);
-    assert!(app.component::<Transition>(panel).unwrap().0.is_none());
+    assert!(
+        app.component::<Transition>(panel)
+            .unwrap()
+            .running
+            .is_none()
+    );
 }
 
 #[test]
@@ -478,7 +693,12 @@ fn speed_is_inherited_and_zero_duration_still_overrides_it() {
         (LayoutStyle::default().size(px(10.0), px(10.0)),),
     );
     app.tick();
-    assert!(app.component::<Transition>(child).unwrap().0.is_none());
+    assert!(
+        app.component::<Transition>(child)
+            .unwrap()
+            .running
+            .is_none()
+    );
     app.emit(MoveTo(200.0), panel);
     app.tick();
     let started = start(&app, panel);
@@ -490,8 +710,18 @@ fn speed_is_inherited_and_zero_duration_still_overrides_it() {
     *app.component_mut::<AnimationSettings>(child).unwrap() = animated(0, |t| t);
     app.tick();
     assert_eq!(app.component::<Layout>(child).unwrap().rect.x(), 200.0);
-    assert!(app.component::<Transition>(child).unwrap().0.is_none());
-    assert!(app.component::<Transition>(panel).unwrap().0.is_some());
+    assert!(
+        app.component::<Transition>(child)
+            .unwrap()
+            .running
+            .is_none()
+    );
+    assert!(
+        app.component::<Transition>(panel)
+            .unwrap()
+            .running
+            .is_some()
+    );
 }
 
 #[test]
@@ -522,7 +752,7 @@ fn extreme_positive_speeds_do_not_overflow_or_divide_by_zero() {
         let running = app
             .component::<Transition>(panel)
             .unwrap()
-            .0
+            .running
             .as_ref()
             .unwrap();
         assert_eq!(running.duration, duration);
@@ -533,7 +763,10 @@ fn extreme_positive_speeds_do_not_overflow_or_divide_by_zero() {
             if duration.is_zero() { 100.0 } else { 0.0 }
         );
         assert_eq!(
-            app.component::<Transition>(panel).unwrap().0.is_none(),
+            app.component::<Transition>(panel)
+                .unwrap()
+                .running
+                .is_none(),
             duration.is_zero()
         );
     }
