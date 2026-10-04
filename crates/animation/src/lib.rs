@@ -45,10 +45,12 @@ use std::time::Duration;
 use app::prelude::*;
 use window::Frame;
 
+mod context;
 mod displayed_layout;
 mod paint;
 mod time;
 
+pub use context::AnimationContext;
 pub use displayed_layout::Layout;
 pub use paint::{AnimatedPaint, PaintTransition};
 pub use time::Time;
@@ -56,8 +58,8 @@ pub use time::Time;
 /// The animation types normally imported by a consumer.
 pub mod prelude {
     pub use crate::{
-        AnimatedPaint, AnimationModule, AnimationTime, Layout, LayoutAnimationSettings,
-        PaintAnimationSettings, PaintTransition, Time,
+        AnimatedPaint, AnimationContext, AnimationModule, AnimationTime, Layout,
+        LayoutAnimationSettings, PaintAnimationSettings, PaintTransition, Time,
     };
 }
 
