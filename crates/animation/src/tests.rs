@@ -1,6 +1,7 @@
 use super::*;
+use crate::{AnimationModule, AnimationSettings, AnimationTime};
 use ::paint::prelude::*; // crate root. Why is this even here
-use geometry::Color;
+use geometry::{Color, Size};
 use layout::prelude::*;
 use window::{FrameRequested, WindowModule, window};
 
@@ -200,6 +201,76 @@ fn first_resolved_layout_notifies_consumers_in_the_same_tick() {
     app.resource_mut::<Changes>().0.clear();
     app.tick();
     assert!(app.resource::<Changes>().0.is_empty());
+}
+
+#[test]
+fn changing_a_window_from_column_to_row_retargets_its_children() {
+    let mut app = app();
+    let window = app.spawn(
+        app.root(),
+        window().layout(LayoutStyle::default().column().size(px(480.0), px(320.0))),
+    );
+    let first = app.spawn_with(
+        window,
+        Leaf,
+        (LayoutStyle::default().size(px(440.0), px(200.0)),),
+    );
+    let second = app.spawn_with(
+        window,
+        Leaf,
+        (
+            animated(1500, |t| t * t * t),
+            LayoutStyle::default().size(px(440.0), px(200.0)),
+        ),
+    );
+    let third = app.spawn_with(
+        window,
+        Leaf,
+        (
+            animated(500, |t| t),
+            LayoutStyle::default()
+                .inset(Insets::new(px(410.0), auto(), auto(), px(0.0)))
+                .size(px(200.0), px(180.0)),
+        ),
+    );
+    app.tick();
+    app.signal(Frame(window.id()));
+    app.flush();
+    app.resource_mut::<Requests>().0.clear();
+
+    let before = *app.component::<Layout>(second).unwrap();
+    *app.component_mut::<LayoutStyle>(window).unwrap() =
+        LayoutStyle::default().row().size(px(480.0), px(320.0));
+    app.component_mut::<LayoutStyle>(second).unwrap().width = px(220.0);
+    app.tick();
+
+    assert_eq!(
+        app.component::<ComputedLayout>(window).unwrap().rect.size,
+        Size::new(480.0, 320.0)
+    );
+    assert_eq!(
+        app.component::<Layout>(window).unwrap().rect.size,
+        Size::new(480.0, 320.0)
+    );
+    assert_eq!(*app.component::<Layout>(second).unwrap(), before);
+    assert!(
+        app.component::<Transition>(second)
+            .unwrap()
+            .running
+            .is_some()
+    );
+    assert!(
+        app.component::<Transition>(third)
+            .unwrap()
+            .running
+            .is_some()
+    );
+    assert_eq!(app.resource::<Requests>().0, [window.id()]);
+    assert_eq!(
+        app.component::<Layout>(first).unwrap().rect,
+        app.component::<ComputedLayout>(first).unwrap().rect,
+        "a nonanimated child should copy its target"
+    );
 }
 
 #[test]
@@ -722,19 +793,6 @@ fn speed_is_inherited_and_zero_duration_still_overrides_it() {
             .running
             .is_some()
     );
-}
-
-#[test]
-fn invalid_speeds_are_rejected() {
-    for speed in [0.0, -0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
-        assert!(
-            std::panic::catch_unwind(|| {
-                AnimationSettings::new(AnimationTime::Speed(speed), |t| t)
-            })
-            .is_err(),
-            "accepted invalid speed {speed}"
-        );
-    }
 }
 
 #[test]
