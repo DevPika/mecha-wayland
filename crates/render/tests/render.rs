@@ -3,7 +3,7 @@
 
 use std::cell::RefCell;
 
-use animation::{AnimatedPaint, AnimationModule, AnimationSettings, AnimationTime, Layout};
+use animation::{AnimatedPaint, AnimationModule, AnimationTime, Layout, PaintAnimationSettings};
 use app::prelude::*;
 use geometry::{Color, Corners, Insets, Point, Rect, Size};
 use layout::prelude::*;
@@ -691,8 +691,8 @@ fn renderer_reads_displayed_paint_not_its_target() {
 
     let mut app = app();
     let (win, a, _) = two_quads(&mut app);
-    *app.component_mut::<AnimationSettings>(a).unwrap() =
-        AnimationSettings::new(AnimationTime::Duration(Duration::from_secs(60)), |t| t);
+    *app.component_mut::<PaintAnimationSettings>(a).unwrap() =
+        PaintAnimationSettings::new(AnimationTime::Duration(Duration::from_secs(60)), |t| t);
     *app.component_mut::<Paint>(a).unwrap() = Paint::Quad(Quad::new(BLUE));
     app.tick();
 

@@ -50,7 +50,7 @@ impl Widget for Shell {
 			win,
 			Leaf,
 			(
-				AnimationSettings::new(
+				LayoutAnimationSettings::new(
 					AnimationTime::Duration(Duration::from_millis(1500)),
 					|t| t * t * t,
 				),
@@ -60,6 +60,9 @@ impl Widget for Shell {
 		);
 
 		s.on::<Clicked>(panel2, move |ctx, _| {
+			// Keep the size negotiated with the compositor; change direction only.
+			ctx.at(win).unwrap().set_direction(Direction::Row);
+
 			let mut panel = ctx.at(panel2).unwrap();
 			let width = if panel.style().width == px(440.0) {
 				px(220.0)
@@ -76,13 +79,16 @@ impl Widget for Shell {
 			win,
 			Leaf,
 			(
-				AnimationSettings::new(
-					AnimationTime::Duration(Duration::from_millis(500)),
+				LayoutAnimationSettings::new(
+					AnimationTime::Duration(Duration::from_millis(200)),
 					|t| t, // Linear: 150 px / 1.5 s = 100 px/s
+				),
+				PaintAnimationSettings::new(
+					AnimationTime::Speed(0.8),
+					|t| t * t * t,
 				),
 				LayoutStyle::default()
 					.column()
-					.absolute()
 					.inset(Insets::new(px(410.0), auto(), auto(), px(0.0)))
 					.size(px(200.0), px(180.0)),
 				Paint::Quad(Quad::new(original).radius(12.0)),
@@ -93,11 +99,12 @@ impl Widget for Shell {
 			let mut panel = ctx.at(panel3).unwrap();
 
 			/*
-			*panel.component_mut::<AnimationSettings>().unwrap() =
-			AnimationSettings::new(
+			*panel.component_mut::<LayoutAnimationSettings>().unwrap() =
+			LayoutAnimationSettings::new(
 				AnimationTime::Duration(Duration::from_millis(1500)),
 				|t| t,
 			);
+			*panel.component_mut::<PaintAnimationSettings>().unwrap() =
 			*/
 
 			let Paint::Quad(mut quad) = panel.paint().clone() else {
@@ -111,8 +118,8 @@ impl Widget for Shell {
 			panel.set_paint(Paint::Quad(quad));
 
 			/*
-			*panel.component_mut::<AnimationSettings>().unwrap() =
-			AnimationSettings::new(
+			*panel.component_mut::<LayoutAnimationSettings>().unwrap() =
+			LayoutAnimationSettings::new(
 				AnimationTime::Speed(800.0),
 				|t| t * t * t,
 			);

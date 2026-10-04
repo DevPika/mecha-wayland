@@ -4,10 +4,11 @@
 //! Install after `LayoutModule` and `WindowModule`, and before `RenderModule`.
 //! This module maintains all displayed layouts: nonanimated nodes copy their
 //! targets, while animated nodes interpolate.
-//! Settings inherit from the nearest configured ancestor; a zero duration
-//! overrides inheritance and snaps. Layout roots always snap. The first layout
-//! resolution is copied immediately by the animation module. Later resolutions,
-//! including a compositor resize during startup, can start transitions.
+//! Layout and paint settings inherit independently from the nearest configured
+//! ancestor; a zero duration overrides inheritance and snaps that property.
+//! Layout roots always snap. The first layout resolution is copied immediately
+//! by the animation module. Later resolutions, including a compositor resize
+//! during startup, can start transitions.
 //!
 //! After each layout pass, changed targets start transitions and active windows
 //! request frames. On `Frame`, the clock is sampled and displayed geometry is
@@ -55,8 +56,8 @@ pub use time::Time;
 /// The animation types normally imported by a consumer.
 pub mod prelude {
     pub use crate::{
-        AnimatedPaint, AnimationModule, AnimationSettings, AnimationTime, Layout, PaintTransition,
-        Time,
+        AnimatedPaint, AnimationModule, AnimationTime, Layout, LayoutAnimationSettings,
+        PaintAnimationSettings, PaintTransition, Time,
     };
 }
 
@@ -78,23 +79,24 @@ pub enum AnimationTime {
     Speed(f32),
 }
 
-/// A node's optional explicit animation configuration.
+/// A node's optional explicit layout animation configuration.
 ///
 /// Every live node has this component once [`AnimationModule`] is installed.
 /// `Default` contains `None`, meaning "inherit", not "disable animation".
-/// The nearest explicit settings on the node or its ancestors win. If none
-/// exist, the node's displayed layout copies its target without animating.
+/// The nearest explicit layout settings on the node or its ancestors win,
+/// independently of [`PaintAnimationSettings`]. If none exist, the node's
+/// displayed layout copies its target without animating.
 ///
-/// [`AnimationSettings::new`] contains `Some(settings)`, even for a zero
+/// [`LayoutAnimationSettings::new`] contains `Some(settings)`, even for a zero
 /// duration. An explicit zero duration therefore overrides an animated parent
 /// and snaps; descendants inherit that choice unless they override it again.
 #[derive(Debug, Clone, Copy, Default)]
-pub struct AnimationSettings(Option<Settings>);
+pub struct LayoutAnimationSettings(Option<Settings>);
 
-impl Component for AnimationSettings {}
+impl Component for LayoutAnimationSettings {}
 
-impl AnimationSettings {
-    /// Set this node's timing and easing, overriding inherited settings.
+impl LayoutAnimationSettings {
+    /// Set this node's layout timing and easing, overriding inherited settings.
     ///
     /// `easing` accepts normalized elapsed time and returns the interpolation
     /// amount. Its output is not clamped, allowing overshoot. At completion,
@@ -107,22 +109,42 @@ impl AnimationSettings {
     /// disable animation rather than zero speed.
     ///
     /// ```
-    /// use animation::{AnimationSettings, AnimationTime};
+    /// use animation::{LayoutAnimationSettings, AnimationTime};
     /// use std::time::Duration;
     ///
-    /// let settings = AnimationSettings::new(
+    /// let settings = LayoutAnimationSettings::new(
     ///     AnimationTime::Duration(Duration::from_millis(1500)),
     ///     |t| t * t,
     /// );
     /// ```
     pub fn new(time: AnimationTime, easing: fn(f32) -> f32) -> Self {
-        if let AnimationTime::Speed(speed) = time {
-            assert!(
-                speed.is_finite() && speed > 0.0,
-                "animation speed must be finite and strictly positive"
-            );
-        }
-        Self(Some(Settings { time, easing }))
+        Self(Some(Settings::new(time, easing)))
+    }
+}
+
+/// A node's optional explicit paint animation configuration.
+///
+/// `Default` means inherit the nearest explicit paint settings, independently
+/// of [`LayoutAnimationSettings`]. An explicit zero duration overrides paint
+/// inheritance and snaps. Only quad-to-quad paint changes can animate.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct PaintAnimationSettings(Option<Settings>);
+
+impl Component for PaintAnimationSettings {}
+
+impl PaintAnimationSettings {
+    /// Set this node's paint timing and easing, overriding inherited settings.
+    ///
+    /// The easing function receives normalized elapsed time and may overshoot;
+    /// completion still assigns the exact target. Functions and noncapturing
+    /// closures can be supplied.
+    ///
+    /// # Panics
+    ///
+    /// Panics if a speed is zero, negative, or nonfinite. Use zero duration to
+    /// disable paint animation rather than zero speed.
+    pub fn new(time: AnimationTime, easing: fn(f32) -> f32) -> Self {
+        Self(Some(Settings::new(time, easing)))
     }
 }
 
@@ -132,6 +154,34 @@ impl AnimationSettings {
 struct Settings {
     time: AnimationTime,
     easing: fn(f32) -> f32,
+}
+
+impl Settings {
+    fn new(time: AnimationTime, easing: fn(f32) -> f32) -> Self {
+        if let AnimationTime::Speed(speed) = time {
+            assert!(
+                speed.is_finite() && speed > 0.0,
+                "animation speed must be finite and strictly positive"
+            );
+        }
+        Self { time, easing }
+    }
+}
+
+trait SettingsComponent: Component {
+    fn explicit(&self) -> Option<Settings>;
+}
+
+impl SettingsComponent for LayoutAnimationSettings {
+    fn explicit(&self) -> Option<Settings> {
+        self.0
+    }
+}
+
+impl SettingsComponent for PaintAnimationSettings {
+    fn explicit(&self) -> Option<Settings> {
+        self.0
+    }
 }
 
 /// Installs the clock, settings and transition components, and animation systems.
@@ -151,7 +201,8 @@ impl Module for AnimationModule {
         app.init_resource::<Time>()
             .system::<PostTick>(time::update_time)
             .system::<Frame>(time::update_time)
-            .register_component::<AnimationSettings>()
+            .register_component::<LayoutAnimationSettings>()
+            .register_component::<PaintAnimationSettings>()
             .register_component::<Layout>()
             .register_component::<displayed_layout::Transition>()
             .register_component::<AnimatedPaint>()
@@ -164,17 +215,15 @@ impl Module for AnimationModule {
     }
 }
 
-/// Resolve a live node's explicit settings, then its nearest ancestor's.
+/// Resolve a live node's explicit settings for one property, then its nearest
+/// ancestor's.
 /// Siblings are never consulted. Zero-duration settings still stop the search;
 /// only `None` means continue inheriting. Nothing is copied into child settings.
-fn settings(app: &App, id: NodeId) -> Option<Settings> {
+fn settings<C: SettingsComponent>(app: &App, id: NodeId) -> Option<Settings> {
     std::iter::once(id)
         .chain(app.ancestors(id))
-        .find_map(|node| app.component::<AnimationSettings>(node)?.0)
+        .find_map(|node| app.component::<C>(node)?.explicit())
 }
-// TODO: maybe remove that ^ function ? Surely there's a better function to
-// write, there's only one use for this, and we shouldn't need to further
-// filter the output.
 
 #[cfg(test)]
 mod tests {
@@ -185,7 +234,7 @@ mod tests {
         for speed in [0.0, -0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert!(
                 std::panic::catch_unwind(|| {
-                    AnimationSettings::new(AnimationTime::Speed(speed), |t| t)
+                    LayoutAnimationSettings::new(AnimationTime::Speed(speed), |t| t)
                 })
                 .is_err(),
                 "accepted invalid speed {speed}"

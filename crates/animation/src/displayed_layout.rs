@@ -8,7 +8,7 @@ use geometry::{Insets, Rect};
 use layout::{ComputedLayout, LayoutDone, LayoutRoot};
 use window::{Frame, InWindow, RequestFrame};
 
-use crate::{AnimationTime, Time, settings};
+use crate::{AnimationTime, LayoutAnimationSettings, Time, settings};
 
 /// The displayed box in its layout root's coordinates. Initialized from
 /// [`ComputedLayout`] on first resolution, then maintained by the animation
@@ -118,7 +118,7 @@ pub(crate) fn on_layout_done(app: &mut App, done: &LayoutDone) {
             }
             continue;
         }
-        let configuration = settings(app, id).filter(|s| {
+        let configuration = settings::<LayoutAnimationSettings>(app, id).filter(|s| {
             !matches!(s.time, AnimationTime::Duration(d) if d.is_zero())
                 && window.is_some()
                 && !app.component::<LayoutRoot>(id).unwrap().0

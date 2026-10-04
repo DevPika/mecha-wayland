@@ -5,7 +5,7 @@ use geometry::{Color, Corners, Insets};
 use paint::{Paint, Quad};
 use window::{Frame, InWindow, RequestFrame};
 
-use crate::{AnimationTime, Time, settings};
+use crate::{AnimationTime, PaintAnimationSettings, Time, settings};
 
 /// The displayed paint, initialized from [`Paint`] at spawn and snapped when
 /// its target cannot animate.
@@ -55,7 +55,7 @@ pub(crate) fn on_paint_changed(app: &mut App, changed: &Emitted<OnChanged<Paint>
         let window = app.component::<InWindow>(id).unwrap().0;
 
         // duration == zero is the same as snapping
-        let configuration = settings(app, id).filter(|s| {
+        let configuration = settings::<PaintAnimationSettings>(app, id).filter(|s| {
             !matches!(s.time, AnimationTime::Duration(duration) if duration.is_zero())
                 && window.is_some()
         });

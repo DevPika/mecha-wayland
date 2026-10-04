@@ -1,5 +1,5 @@
 use super::*;
-use crate::{AnimationModule, AnimationSettings, AnimationTime};
+use crate::{AnimationModule, AnimationTime, LayoutAnimationSettings};
 use ::paint::prelude::*; // crate root. Why is this even here
 use geometry::{Color, Size};
 use layout::prelude::*;
@@ -37,8 +37,8 @@ fn app() -> App {
     app
 }
 
-fn animated(ms: u64, easing: fn(f32) -> f32) -> AnimationSettings {
-    AnimationSettings::new(AnimationTime::Duration(Duration::from_millis(ms)), easing)
+fn animated(ms: u64, easing: fn(f32) -> f32) -> LayoutAnimationSettings {
+    LayoutAnimationSettings::new(AnimationTime::Duration(Duration::from_millis(ms)), easing)
 }
 
 fn scene(app: &mut App) -> (NodeId, Handle<Leaf>) {
@@ -379,7 +379,8 @@ fn first_resolution_snaps_then_an_event_starts_a_duration_transition() {
 fn nonanimated_nodes_copy_and_request_a_frame_in_the_same_tick() {
     let mut app = app();
     let (window, panel) = scene(&mut app);
-    *app.component_mut::<AnimationSettings>(panel).unwrap() = AnimationSettings::default();
+    *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
+        LayoutAnimationSettings::default();
     app.emit(MoveTo(100.0), panel);
     app.tick();
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 100.0);
@@ -446,7 +447,7 @@ fn children_inherit_and_explicit_settings_override() {
     assert_eq!(app.component::<Layout>(inherited).unwrap().rect.x(), 25.0);
     assert_eq!(app.component::<Layout>(overridden).unwrap().rect.x(), 50.0);
     assert!(
-        app.component::<AnimationSettings>(inherited)
+        app.component::<LayoutAnimationSettings>(inherited)
             .unwrap()
             .0
             .is_none(),
@@ -462,7 +463,7 @@ fn zero_duration_disables_inheritance_and_syncs_without_relayout() {
     app.tick();
     let started = start(&app, panel);
     advance(&mut app, window, started + Duration::from_millis(500));
-    *app.component_mut::<AnimationSettings>(panel).unwrap() = animated(0, |t| t);
+    *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() = animated(0, |t| t);
     app.tick();
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 100.0);
     assert!(
@@ -493,9 +494,10 @@ fn zero_duration_disables_inheritance_and_syncs_without_relayout() {
 fn new_settings_and_style_in_the_same_tick_do_not_snap_the_target() {
     let mut app = app();
     let (_, panel) = scene(&mut app);
-    *app.component_mut::<AnimationSettings>(panel).unwrap() = AnimationSettings::default();
+    *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
+        LayoutAnimationSettings::default();
     app.tick();
-    *app.component_mut::<AnimationSettings>(panel).unwrap() = animated(1000, |t| t);
+    *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() = animated(1000, |t| t);
     app.emit(MoveTo(100.0), panel);
     app.tick();
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 0.0);
@@ -538,7 +540,8 @@ fn frame_updates_only_its_window_and_removed_slots_do_not_inherit_transitions() 
 fn window_roots_snap_and_frame_animation_reaches_the_target() {
     let mut app = app();
     let (window, panel) = scene(&mut app);
-    *app.component_mut::<AnimationSettings>(window).unwrap() = animated(1000, |t| t);
+    *app.component_mut::<LayoutAnimationSettings>(window)
+        .unwrap() = animated(1000, |t| t);
     app.component_mut::<LayoutStyle>(window).unwrap().width = px(500.0);
     app.emit(MoveTo(100.0), panel);
     app.tick();
@@ -585,8 +588,8 @@ fn speed_derives_duration_from_distance_and_retains_easing() {
         for easing in [|t| t, |t| t * t, |t| t * 2.0] as [fn(f32) -> f32; 3] {
             let mut app = app();
             let (window, panel) = scene(&mut app);
-            *app.component_mut::<AnimationSettings>(panel).unwrap() =
-                AnimationSettings::new(AnimationTime::Speed(100.0), easing);
+            *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
+                LayoutAnimationSettings::new(AnimationTime::Speed(100.0), easing);
             app.emit(MoveTo(destination), panel);
             app.tick();
             let duration = Duration::from_secs_f64(seconds);
@@ -625,8 +628,8 @@ fn speed_distance_accounts_for_every_layout_field() {
     for field in 0..12 {
         let mut app = app();
         let (window, panel) = scene(&mut app);
-        *app.component_mut::<AnimationSettings>(panel).unwrap() =
-            AnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
+        *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
+            LayoutAnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
         let from = *app.component::<Layout>(panel).unwrap();
         let mut target = *app.component::<ComputedLayout>(panel).unwrap();
         let fields = [
@@ -673,8 +676,8 @@ fn speed_distance_accounts_for_every_layout_field() {
 fn speed_uses_one_duration_for_all_fields_not_diagonal_distance() {
     let mut app = app();
     let (window, panel) = scene(&mut app);
-    *app.component_mut::<AnimationSettings>(panel).unwrap() =
-        AnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
+    *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
+        LayoutAnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
     let from = *app.component::<Layout>(panel).unwrap();
     let target = ComputedLayout {
         rect: Rect::new(100.0, 100.0, 200.0, 150.0),
@@ -708,16 +711,16 @@ fn speed_uses_one_duration_for_all_fields_not_diagonal_distance() {
 fn speed_retargeting_uses_displayed_layout_and_new_settings() {
     let mut app = app();
     let (window, panel) = scene(&mut app);
-    *app.component_mut::<AnimationSettings>(panel).unwrap() =
-        AnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
+    *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
+        LayoutAnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
     app.emit(MoveTo(200.0), panel);
     app.tick();
     let started = start(&app, panel);
     advance(&mut app, window, started + Duration::from_millis(500));
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 50.0);
 
-    *app.component_mut::<AnimationSettings>(panel).unwrap() =
-        AnimationSettings::new(AnimationTime::Speed(200.0), |t| t * t);
+    *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
+        LayoutAnimationSettings::new(AnimationTime::Speed(200.0), |t| t * t);
     app.tick();
     let running = app
         .component::<Transition>(panel)
@@ -756,8 +759,8 @@ fn speed_retargeting_uses_displayed_layout_and_new_settings() {
 fn speed_is_inherited_and_zero_duration_still_overrides_it() {
     let mut app = app();
     let (window, panel) = scene(&mut app);
-    *app.component_mut::<AnimationSettings>(panel).unwrap() =
-        AnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
+    *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
+        LayoutAnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
     let child = app.spawn_with(
         panel,
         Leaf,
@@ -778,7 +781,7 @@ fn speed_is_inherited_and_zero_duration_still_overrides_it() {
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 50.0);
     assert_eq!(app.component::<Layout>(child).unwrap().rect.x(), 50.0);
 
-    *app.component_mut::<AnimationSettings>(child).unwrap() = animated(0, |t| t);
+    *app.component_mut::<LayoutAnimationSettings>(child).unwrap() = animated(0, |t| t);
     app.tick();
     assert_eq!(app.component::<Layout>(child).unwrap().rect.x(), 200.0);
     assert!(
@@ -803,8 +806,8 @@ fn extreme_positive_speeds_do_not_overflow_or_divide_by_zero() {
     ] {
         let mut app = app();
         let (window, panel) = scene(&mut app);
-        *app.component_mut::<AnimationSettings>(panel).unwrap() =
-            AnimationSettings::new(AnimationTime::Speed(speed), |t| t);
+        *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
+            LayoutAnimationSettings::new(AnimationTime::Speed(speed), |t| t);
         app.emit(MoveTo(100.0), panel);
         app.tick();
         let running = app
