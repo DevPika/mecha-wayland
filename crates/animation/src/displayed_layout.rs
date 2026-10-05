@@ -1,14 +1,18 @@
 //! The renderer-facing geometry and its transitions from Taffy's resolved target.
 
 use std::collections::HashSet;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use app::prelude::*;
 use geometry::{Insets, Rect};
 use layout::{ComputedLayout, LayoutDone, LayoutRoot};
 use window::{Frame, InWindow, RequestFrame};
 
-use crate::{AnimationTime, Easing, LayoutAnimationSettings, Time, settings};
+use crate::{
+    AnimationTime, LayoutAnimationSettings, Time,
+    animatable::{Animatable, Running},
+    settings,
+};
 
 /// The displayed box in its layout root's coordinates. Initialized from
 /// [`ComputedLayout`] on first resolution, then maintained by the animation
@@ -44,26 +48,62 @@ impl Layout {
     }
 }
 
+impl Animatable for Layout {
+    fn max_delta(self, target: Self) -> f64 {
+        [
+            (self.rect.x(), target.rect.x()),
+            (self.rect.y(), target.rect.y()),
+            (self.rect.width(), target.rect.width()),
+            (self.rect.height(), target.rect.height()),
+            (self.padding.top, target.padding.top),
+            (self.padding.right, target.padding.right),
+            (self.padding.bottom, target.padding.bottom),
+            (self.padding.left, target.padding.left),
+            (self.border.top, target.border.top),
+            (self.border.right, target.border.right),
+            (self.border.bottom, target.border.bottom),
+            (self.border.left, target.border.left),
+        ]
+        .into_iter()
+        .map(|(from, to)| (f64::from(to) - f64::from(from)).abs())
+        .fold(0.0, f64::max)
+    }
+
+    /// Blend every numeric layout field using the already-eased amount.
+    /// This does not rerun Taffy or enforce intermediate layout constraints.
+    /// The amount is not clamped and the result is not rounded here.
+    fn interpolate(self, target: Self, amount: f32) -> Self {
+        let lerp = |a: f32, b: f32| a + (b - a) * amount;
+        let insets = |a: Insets<f32>, b: Insets<f32>| {
+            Insets::new(
+                lerp(a.top, b.top),
+                lerp(a.right, b.right),
+                lerp(a.bottom, b.bottom),
+                lerp(a.left, b.left),
+            )
+        };
+        Self {
+            rect: Rect::new(
+                lerp(self.rect.x(), target.rect.x()),
+                lerp(self.rect.y(), target.rect.y()),
+                lerp(self.rect.width(), target.rect.width()),
+                lerp(self.rect.height(), target.rect.height()),
+            ),
+            padding: insets(self.padding, target.padding),
+            border: insets(self.border, target.border),
+        }
+    }
+}
+
 /// Per-node runtime state. A node is unresolved until its layout root's pass
 /// first visits it, even when that pass produces the default zero-sized box.
 /// Running data is absent when idle and resets when the node is removed.
 #[derive(Default)]
 pub(crate) struct Transition {
     resolved: bool,
-    running: Option<Running>,
+    running: Option<Running<Layout>>,
 }
 impl Component for Transition {}
-
-/// A transition's fixed starting point, destination, clock origin and settings.
-/// Frame samples always interpolate these endpoints, not the previous frame's
-/// output, so the result depends on elapsed time rather than frame count.
-struct Running {
-    from: Layout,
-    target: Layout,
-    started: Instant,
-    duration: Duration,
-    easing: Easing,
-}
 
 /// Reconcile resolved targets with displayed layouts; do not advance time here.
 ///
@@ -146,39 +186,7 @@ pub(crate) fn on_layout_done(app: &mut App, done: &LayoutDone) {
         {
             // Keep the original start and clock across clean layout passes.
         } else if current != target {
-            let duration = match configuration.time {
-                AnimationTime::Duration(duration) => duration,
-                AnimationTime::Speed(speed) => {
-                    // This just finds the max distance from which the duration
-                    // will be calculated
-                    let distance = [
-                        (current.rect.x(), target.rect.x()),
-                        (current.rect.y(), target.rect.y()),
-                        (current.rect.width(), target.rect.width()),
-                        (current.rect.height(), target.rect.height()),
-                        (current.padding.top, target.padding.top),
-                        (current.padding.right, target.padding.right),
-                        (current.padding.bottom, target.padding.bottom),
-                        (current.padding.left, target.padding.left),
-                        (current.border.top, target.border.top),
-                        (current.border.right, target.border.right),
-                        (current.border.bottom, target.border.bottom),
-                        (current.border.left, target.border.left),
-                    ]
-                    .into_iter()
-                    .map(|(from, to)| (f64::from(to) - f64::from(from)).abs())
-                    .fold(0.0, f64::max);
-                    Duration::try_from_secs_f64(distance / f64::from(speed))
-                        .unwrap_or(Duration::MAX)
-                }
-            };
-            transition.running = Some(Running {
-                from: current,
-                target,
-                started: now,
-                duration,
-                easing: configuration.easing,
-            });
+            transition.running = Some(Running::new(current, target, now, configuration));
         } else {
             transition.running = None;
         }
@@ -224,18 +232,7 @@ fn advance(app: &mut App, window: NodeId, now: Instant) {
         let Some(running) = &transition.running else {
             continue; // skip everything that doesn't have a currently running animation
         };
-        let elapsed = now.duration_since(running.started);
-        let finished = elapsed >= running.duration;
-        let value = if finished {
-            running.target
-        } else {
-            let progress = elapsed.as_secs_f32() / running.duration.as_secs_f32();
-            interpolate(
-                running.from,
-                running.target,
-                running.easing.resolve(progress),
-            )
-        };
+        let (value, finished) = running.advance(now);
         layouts.get_mut(id).unwrap().set_if_neq(value); // set the layout here
         if finished {
             transition.running = None;
@@ -243,31 +240,6 @@ fn advance(app: &mut App, window: NodeId, now: Instant) {
     }
     drop((membership, layouts, transitions));
     app.take_changed::<Transition>().for_each(drop);
-}
-
-/// Blend every numeric layout field using the already-eased amount `t`.
-/// This does not rerun Taffy or enforce intermediate layout constraints. The
-/// amount is not clamped and the result is not rounded to device pixels here.
-fn interpolate(from: Layout, to: Layout, t: f32) -> Layout {
-    let lerp = |a: f32, b: f32| a + (b - a) * t;
-    let insets = |a: Insets<f32>, b: Insets<f32>| {
-        Insets::new(
-            lerp(a.top, b.top),
-            lerp(a.right, b.right),
-            lerp(a.bottom, b.bottom),
-            lerp(a.left, b.left),
-        )
-    };
-    Layout {
-        rect: Rect::new(
-            lerp(from.rect.x(), to.rect.x()),
-            lerp(from.rect.y(), to.rect.y()),
-            lerp(from.rect.width(), to.rect.width()),
-            lerp(from.rect.height(), to.rect.height()),
-        ),
-        padding: insets(from.padding, to.padding),
-        border: insets(from.border, to.border),
-    }
 }
 
 #[cfg(test)]

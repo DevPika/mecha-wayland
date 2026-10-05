@@ -45,6 +45,7 @@ use std::time::Duration;
 use app::prelude::*;
 use window::Frame;
 
+mod animatable;
 mod context;
 mod displayed_layout;
 mod easing;

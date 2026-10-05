@@ -3,6 +3,7 @@ use crate::{AnimationModule, AnimationTime, Easing, LayoutAnimationSettings};
 use ::paint::prelude::*; // crate root. Why is this even here
 use geometry::{Color, Size};
 use layout::prelude::*;
+use std::time::Duration;
 use window::{FrameRequested, WindowModule, window};
 
 struct MoveTo(f32);
@@ -573,7 +574,7 @@ fn interpolation_includes_size_padding_and_border() {
         border: Insets::new(10.0, 12.0, 14.0, 16.0),
     };
     assert_eq!(
-        interpolate(from, target, 0.5),
+        from.interpolate(target, 0.5),
         Layout {
             rect: Rect::new(10.0, 20.0, 40.0, 50.0),
             padding: Insets::new(1.0, 2.0, 3.0, 4.0),
@@ -685,7 +686,7 @@ fn speed_distance_accounts_for_every_layout_field() {
         advance(&mut app, window, started + Duration::from_millis(250));
         assert_eq!(
             *app.component::<Layout>(panel).unwrap(),
-            interpolate(from, Layout::from(target), 0.5),
+            from.interpolate(Layout::from(target), 0.5),
             "field {field}"
         );
     }
@@ -717,7 +718,7 @@ fn speed_uses_one_duration_for_all_fields_not_diagonal_distance() {
     advance(&mut app, window, started + Duration::from_millis(500));
     assert_eq!(
         *app.component::<Layout>(panel).unwrap(),
-        interpolate(from, Layout::from(target), 0.5)
+        from.interpolate(Layout::from(target), 0.5)
     );
     advance(&mut app, window, started + Duration::from_secs(1));
     assert_eq!(
