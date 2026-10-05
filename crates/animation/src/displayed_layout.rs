@@ -8,7 +8,7 @@ use geometry::{Insets, Rect};
 use layout::{ComputedLayout, LayoutDone, LayoutRoot};
 use window::{Frame, InWindow, RequestFrame};
 
-use crate::{AnimationTime, LayoutAnimationSettings, Time, settings};
+use crate::{AnimationTime, Easing, LayoutAnimationSettings, Time, settings};
 
 /// The displayed box in its layout root's coordinates. Initialized from
 /// [`ComputedLayout`] on first resolution, then maintained by the animation
@@ -62,7 +62,7 @@ struct Running {
     target: Layout,
     started: Instant,
     duration: Duration,
-    easing: fn(f32) -> f32,
+    easing: Easing,
 }
 
 /// Reconcile resolved targets with displayed layouts; do not advance time here.
@@ -230,7 +230,11 @@ fn advance(app: &mut App, window: NodeId, now: Instant) {
             running.target
         } else {
             let progress = elapsed.as_secs_f32() / running.duration.as_secs_f32();
-            interpolate(running.from, running.target, (running.easing)(progress))
+            interpolate(
+                running.from,
+                running.target,
+                running.easing.resolve(progress),
+            )
         };
         layouts.get_mut(id).unwrap().set_if_neq(value); // set the layout here
         if finished {

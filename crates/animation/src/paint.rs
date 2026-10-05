@@ -5,7 +5,7 @@ use geometry::{Color, Corners, Insets};
 use paint::{Paint, Quad};
 use window::{Frame, InWindow, RequestFrame};
 
-use crate::{AnimationTime, PaintAnimationSettings, Time, settings};
+use crate::{AnimationTime, Easing, PaintAnimationSettings, Time, settings};
 
 /// The displayed paint, initialized from [`Paint`] at spawn and snapped when
 /// its target cannot animate.
@@ -32,7 +32,7 @@ struct Running {
     target: Quad,
     started: Instant,
     duration: Duration,
-    easing: fn(f32) -> f32,
+    easing: Easing,
 }
 
 pub(crate) fn on_spawned(app: &mut App, spawned: &Spawned) {
@@ -165,7 +165,7 @@ fn advance(app: &mut App, window: app::NodeId, now: Instant) {
             running.target
         } else {
             let progress = elapsed.as_secs_f32() / running.duration.as_secs_f32();
-            interpolate(running.from, running.target, (running.easing)(progress))
+            interpolate(running.from, running.target, running.easing.resolve(progress))
         };
         paints
             .get_mut(id)

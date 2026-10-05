@@ -47,18 +47,20 @@ use window::Frame;
 
 mod context;
 mod displayed_layout;
+mod easing;
 mod paint;
 mod time;
 
 pub use context::AnimationContext;
 pub use displayed_layout::Layout;
+pub use easing::Easing;
 pub use paint::{AnimatedPaint, PaintTransition};
 pub use time::Time;
 
 /// The animation types normally imported by a consumer.
 pub mod prelude {
     pub use crate::{
-        AnimatedPaint, AnimationContext, AnimationModule, AnimationTime, Layout,
+        AnimatedPaint, AnimationContext, AnimationModule, AnimationTime, Easing, Layout,
         LayoutAnimationSettings, PaintAnimationSettings, PaintTransition, Time,
     };
 }
@@ -100,10 +102,10 @@ impl Component for LayoutAnimationSettings {}
 impl LayoutAnimationSettings {
     /// Set this node's layout timing and easing, overriding inherited settings.
     ///
-    /// `easing` accepts normalized elapsed time and returns the interpolation
-    /// amount. Its output is not clamped, allowing overshoot. At completion,
-    /// the exact target is assigned regardless of the easing function.
-    /// Functions and noncapturing closures can be supplied.
+    /// `easing` converts normalized elapsed time to interpolation progress.
+    /// Its output is not clamped, allowing overshoot. At completion, the exact
+    /// target is assigned regardless of the easing curve. Use [`Self::custom`]
+    /// for a function or noncapturing closure.
     ///
     /// # Panics
     ///
@@ -111,16 +113,31 @@ impl LayoutAnimationSettings {
     /// disable animation rather than zero speed.
     ///
     /// ```
-    /// use animation::{LayoutAnimationSettings, AnimationTime};
+    /// use animation::{LayoutAnimationSettings, AnimationTime, Easing};
     /// use std::time::Duration;
     ///
     /// let settings = LayoutAnimationSettings::new(
     ///     AnimationTime::Duration(Duration::from_millis(1500)),
+    ///     Easing::EaseInQuad,
+    /// );
+    /// ```
+    pub fn new(time: AnimationTime, easing: Easing) -> Self {
+        Self(Some(Settings::new(time, easing)))
+    }
+
+    /// Configure layout animation with a function or noncapturing closure.
+    ///
+    /// ```
+    /// use animation::{AnimationTime, LayoutAnimationSettings};
+    /// use std::time::Duration;
+    ///
+    /// let settings = LayoutAnimationSettings::custom(
+    ///     AnimationTime::Duration(Duration::from_millis(500)),
     ///     |t| t * t,
     /// );
     /// ```
-    pub fn new(time: AnimationTime, easing: fn(f32) -> f32) -> Self {
-        Self(Some(Settings::new(time, easing)))
+    pub fn custom(time: AnimationTime, easing: fn(f32) -> f32) -> Self {
+        Self::new(time, Easing::Custom(easing))
     }
 }
 
@@ -137,16 +154,21 @@ impl Component for PaintAnimationSettings {}
 impl PaintAnimationSettings {
     /// Set this node's paint timing and easing, overriding inherited settings.
     ///
-    /// The easing function receives normalized elapsed time and may overshoot;
-    /// completion still assigns the exact target. Functions and noncapturing
-    /// closures can be supplied.
+    /// Easing receives normalized elapsed time and may overshoot; completion
+    /// still assigns the exact target. Use [`Self::custom`] for a function or
+    /// noncapturing closure.
     ///
     /// # Panics
     ///
     /// Panics if a speed is zero, negative, or nonfinite. Use zero duration to
     /// disable paint animation rather than zero speed.
-    pub fn new(time: AnimationTime, easing: fn(f32) -> f32) -> Self {
+    pub fn new(time: AnimationTime, easing: Easing) -> Self {
         Self(Some(Settings::new(time, easing)))
+    }
+
+    /// Configure paint animation with a function or noncapturing closure.
+    pub fn custom(time: AnimationTime, easing: fn(f32) -> f32) -> Self {
+        Self::new(time, Easing::Custom(easing))
     }
 }
 
@@ -155,11 +177,11 @@ impl PaintAnimationSettings {
 #[derive(Debug, Clone, Copy)]
 struct Settings {
     time: AnimationTime,
-    easing: fn(f32) -> f32,
+    easing: Easing,
 }
 
 impl Settings {
-    fn new(time: AnimationTime, easing: fn(f32) -> f32) -> Self {
+    fn new(time: AnimationTime, easing: Easing) -> Self {
         if let AnimationTime::Speed(speed) = time {
             assert!(
                 speed.is_finite() && speed > 0.0,
@@ -170,6 +192,17 @@ impl Settings {
     }
 }
 
+/*
+TODO:
+
+Maybe this trait can be removed. We only use it for the settings() function
+
+Either way, both are self.0. It is useful to distinguish a settings type, if
+only it was used globally and had a global meaning
+
+Perhaps we can make this kind of like a "private component, don't touch" trait.
+We can then mark the Transition structs as SettingsComponent(s).
+*/
 trait SettingsComponent: Component {
     fn explicit(&self) -> Option<Settings>;
 }
@@ -236,7 +269,7 @@ mod tests {
         for speed in [0.0, -0.0, -1.0, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
             assert!(
                 std::panic::catch_unwind(|| {
-                    LayoutAnimationSettings::new(AnimationTime::Speed(speed), |t| t)
+                    LayoutAnimationSettings::custom(AnimationTime::Speed(speed), |t| t)
                 })
                 .is_err(),
                 "accepted invalid speed {speed}"

@@ -52,7 +52,7 @@ impl Widget for Shell {
 			(
 				LayoutAnimationSettings::new(
 					AnimationTime::Duration(Duration::from_millis(1500)),
-					|t| t * t * t,
+					Easing::EaseInCubic,
 				),
 				LayoutStyle::default().column().size(px(440.0), px(200.0)),
 				Paint::Quad(Quad::new(Color::rgb(1.0, 0.45, 0.8)).radius(12.0)),
@@ -81,7 +81,7 @@ impl Widget for Shell {
 			(
 				LayoutAnimationSettings::new(
 					AnimationTime::Duration(Duration::from_millis(200)),
-					|t| t, // Linear: 150 px / 1.5 s = 100 px/s
+					Easing::Linear, // Linear: 150 px / 1.5 s = 100 px/s
 				),
 				LayoutStyle::default()
 					.column()
@@ -95,13 +95,13 @@ impl Widget for Shell {
 			let mut panel = ctx.at(panel3).unwrap();
 			panel.set_paint_animation(PaintAnimationSettings::new(
 				AnimationTime::Speed(0.8),
-				|t| t * t * t,
+				Easing::EaseInCubic,
 			));
 
 			/*
 			panel.set_layout_animation(LayoutAnimationSettings::new(
 				AnimationTime::Duration(Duration::from_millis(1500)),
-				|t| t,
+				Easing::Linear,
 			));
 			*/
 
@@ -118,7 +118,7 @@ impl Widget for Shell {
 			/*
 			panel.set_layout_animation(LayoutAnimationSettings::new(
 				AnimationTime::Speed(800.0),
-				|t| t * t * t,
+				Easing::EaseInCubic,
 			));
 			*/
 

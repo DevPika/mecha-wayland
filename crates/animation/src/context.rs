@@ -86,11 +86,11 @@ mod tests {
                 assert!(ctx.layout_animation().0.is_none());
                 assert!(ctx.paint_animation().0.is_none());
 
-                let layout = LayoutAnimationSettings::new(
+                let layout = LayoutAnimationSettings::custom(
                     AnimationTime::Duration(Duration::from_millis(250)),
                     |t| t,
                 );
-                let paint = PaintAnimationSettings::new(AnimationTime::Speed(2.0), |t| t * t);
+                let paint = PaintAnimationSettings::custom(AnimationTime::Speed(2.0), |t| t * t);
                 assert!(ctx.set_layout_animation(layout));
                 assert!(ctx.paint_animation().0.is_none());
                 assert!(matches!(
@@ -102,7 +102,7 @@ mod tests {
                     ctx.paint_animation().0.unwrap().time,
                     AnimationTime::Speed(2.0)
                 ));
-                assert_eq!((ctx.paint_animation().0.unwrap().easing)(0.5), 0.25);
+                assert_eq!(ctx.paint_animation().0.unwrap().easing.resolve(0.5), 0.25);
                 assert!(
                     ctx.set_layout_animation(layout),
                     "equal replacements still write"

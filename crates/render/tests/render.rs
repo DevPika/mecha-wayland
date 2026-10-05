@@ -692,7 +692,7 @@ fn renderer_reads_displayed_paint_not_its_target() {
     let mut app = app();
     let (win, a, _) = two_quads(&mut app);
     *app.component_mut::<PaintAnimationSettings>(a).unwrap() =
-        PaintAnimationSettings::new(AnimationTime::Duration(Duration::from_secs(60)), |t| t);
+        PaintAnimationSettings::custom(AnimationTime::Duration(Duration::from_secs(60)), |t| t);
     *app.component_mut::<Paint>(a).unwrap() = Paint::Quad(Quad::new(BLUE));
     app.tick();
 

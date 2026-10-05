@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use animation::{
-    AnimatedPaint, AnimationModule, AnimationTime, Layout, LayoutAnimationSettings,
+    AnimatedPaint, AnimationModule, AnimationTime, Easing, Layout, LayoutAnimationSettings,
     PaintAnimationSettings, PaintTransition, Time,
 };
 use app::prelude::*;
@@ -89,7 +89,7 @@ fn changed_quads_start_from_displayed_paint_on_the_next_tick() {
     let panel = app.spawn_with(
         window,
         Painted(first.clone()),
-        (PaintAnimationSettings::new(
+        (PaintAnimationSettings::custom(
             AnimationTime::Duration(Duration::from_secs(1)),
             |t| t,
         ),),
@@ -138,7 +138,7 @@ fn unsupported_paint_snaps_and_cancels_a_running_transition() {
     let panel = app.spawn_with(
         window,
         Painted(first),
-        (PaintAnimationSettings::new(
+        (PaintAnimationSettings::custom(
             AnimationTime::Duration(Duration::from_secs(1)),
             |t| t,
         ),),
@@ -154,7 +154,7 @@ fn unsupported_paint_snaps_and_cancels_a_running_transition() {
     );
 
     *app.component_mut::<PaintAnimationSettings>(panel).unwrap() =
-        PaintAnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
+        PaintAnimationSettings::custom(AnimationTime::Speed(100.0), |t| t);
     let green = Paint::Quad(Quad::new(Color::rgb(0.0, 1.0, 0.0)));
     *app.component_mut::<Paint>(panel).unwrap() = green;
     app.tick();
@@ -169,7 +169,7 @@ fn unsupported_paint_snaps_and_cancels_a_running_transition() {
     );
 
     *app.component_mut::<PaintAnimationSettings>(panel).unwrap() =
-        PaintAnimationSettings::new(AnimationTime::Duration(Duration::from_secs(1)), |t| t);
+        PaintAnimationSettings::custom(AnimationTime::Duration(Duration::from_secs(1)), |t| t);
     *app.component_mut::<Paint>(panel).unwrap() = Paint::Quad(Quad::new(Color::WHITE));
     app.tick();
     assert!(
@@ -223,13 +223,13 @@ fn inherited_duration_animates_but_explicit_zero_duration_snaps() {
     let mut app = app();
     let window = app.spawn(app.root(), window());
     *app.component_mut::<PaintAnimationSettings>(window).unwrap() =
-        PaintAnimationSettings::new(AnimationTime::Duration(Duration::from_secs(1)), |t| t);
+        PaintAnimationSettings::custom(AnimationTime::Duration(Duration::from_secs(1)), |t| t);
     let first = Paint::Quad(Quad::new(Color::BLACK));
     let inherited = app.spawn(window, Painted(first.clone()));
     let disabled = app.spawn_with(
         window,
         Painted(first.clone()),
-        (PaintAnimationSettings::new(
+        (PaintAnimationSettings::custom(
             AnimationTime::Duration(Duration::ZERO),
             |t| t,
         ),),
@@ -262,9 +262,9 @@ fn layout_and_paint_inherit_and_override_independently() {
     );
     *app.component_mut::<LayoutAnimationSettings>(window)
         .unwrap() =
-        LayoutAnimationSettings::new(AnimationTime::Duration(Duration::from_secs(1)), |t| t);
+        LayoutAnimationSettings::custom(AnimationTime::Duration(Duration::from_secs(1)), |t| t);
     *app.component_mut::<PaintAnimationSettings>(window).unwrap() =
-        PaintAnimationSettings::new(AnimationTime::Duration(Duration::from_secs(1)), |t| t);
+        PaintAnimationSettings::custom(AnimationTime::Duration(Duration::from_secs(1)), |t| t);
     let style = LayoutStyle::default()
         .absolute()
         .inset(Insets::new(px(0.0), auto(), auto(), px(0.0)))
@@ -275,7 +275,7 @@ fn layout_and_paint_inherit_and_override_independently() {
         Painted(initial.clone()),
         (
             style.clone(),
-            LayoutAnimationSettings::new(AnimationTime::Duration(Duration::ZERO), |t| t),
+            LayoutAnimationSettings::custom(AnimationTime::Duration(Duration::ZERO), |t| t),
         ),
     );
     let snap_paint = app.spawn_with(
@@ -283,7 +283,7 @@ fn layout_and_paint_inherit_and_override_independently() {
         Painted(initial.clone()),
         (
             style,
-            PaintAnimationSettings::new(AnimationTime::Duration(Duration::ZERO), |t| t),
+            PaintAnimationSettings::custom(AnimationTime::Duration(Duration::ZERO), |t| t),
         ),
     );
     app.tick();
@@ -342,7 +342,7 @@ fn frame_interpolates_every_numeric_quad_field_with_easing() {
         Painted(Paint::Quad(Quad::default())),
         (PaintAnimationSettings::new(
             AnimationTime::Duration(duration),
-            |t| t * t,
+            Easing::EaseInQuad,
         ),),
     );
     app.tick();
@@ -381,13 +381,47 @@ fn frame_interpolates_every_numeric_quad_field_with_easing() {
 }
 
 #[test]
+fn a_bezier_curve_eases_displayed_paint_on_frame() {
+    let mut app = app();
+    let window = app.spawn(app.root(), window());
+    let duration = Duration::from_secs(60);
+    let easing = Easing::cubic_bezier(0.25, 0.1, 0.25, 1.0);
+    let panel = app.spawn_with(
+        window,
+        Painted(Paint::Quad(Quad::default())),
+        (PaintAnimationSettings::new(
+            AnimationTime::Duration(duration),
+            easing,
+        ),),
+    );
+    app.tick();
+    *app.component_mut::<Paint>(panel).unwrap() = Paint::Quad(Quad::new(Color::WHITE));
+    app.tick();
+    let started = app.resource::<Time>().now();
+
+    app.signal(Frame(window.id()));
+    app.flush();
+    let progress = (app.resource::<Time>().now() - started).as_secs_f32() / duration.as_secs_f32();
+    let Paint::Quad(shown) = app.component::<AnimatedPaint>(panel).unwrap().0 else {
+        panic!("a quad transition displays a quad");
+    };
+    assert!(progress < 1.0);
+    assert_eq!(shown.color.r, easing.resolve(progress));
+    assert!(
+        app.component::<PaintTransition>(panel)
+            .unwrap()
+            .is_running()
+    );
+}
+
+#[test]
 fn frames_only_advance_their_window_and_completion_writes_the_exact_target() {
     let mut app = app();
     let a = app.spawn(app.root(), window());
     let b = app.spawn(app.root(), window());
     let initial = Paint::Quad(Quad::new(Color::BLACK));
     let settings =
-        PaintAnimationSettings::new(AnimationTime::Duration(Duration::from_nanos(1)), |t| {
+        PaintAnimationSettings::custom(AnimationTime::Duration(Duration::from_nanos(1)), |t| {
             t * 0.5
         });
     let first = app.spawn_with(a, Painted(initial.clone()), (settings,));
@@ -431,7 +465,7 @@ fn retargeting_a_quad_starts_from_its_last_displayed_frame() {
     let panel = app.spawn_with(
         window,
         Painted(Paint::Quad(Quad::new(Color::BLACK))),
-        (PaintAnimationSettings::new(
+        (PaintAnimationSettings::custom(
             AnimationTime::Duration(duration),
             |t| t,
         ),),
@@ -476,7 +510,7 @@ fn speed_measures_every_numeric_quad_field() {
         let panel = app.spawn_with(
             window,
             Painted(Paint::Quad(Quad::default())),
-            (PaintAnimationSettings::new(
+            (PaintAnimationSettings::custom(
                 AnimationTime::Speed(1.0),
                 |t| t,
             ),),
@@ -554,7 +588,7 @@ fn speed_uses_the_largest_change_for_a_shared_eased_duration() {
     let panel = app.spawn_with(
         window,
         Painted(Paint::Quad(Quad::default())),
-        (PaintAnimationSettings::new(
+        (PaintAnimationSettings::custom(
             AnimationTime::Speed(2.0),
             |t| t * t,
         ),),
@@ -588,7 +622,7 @@ fn speed_retargeting_measures_from_the_displayed_quad() {
     let panel = app.spawn_with(
         window,
         Painted(Paint::Quad(Quad::new(Color::BLACK))),
-        (PaintAnimationSettings::new(
+        (PaintAnimationSettings::custom(
             AnimationTime::Speed(0.5),
             |t| t,
         ),),
@@ -632,7 +666,7 @@ fn extreme_speeds_saturate_or_complete_on_the_first_frame() {
         let panel = app.spawn_with(
             window,
             Painted(Paint::Quad(Quad::new(Color::BLACK))),
-            (PaintAnimationSettings::new(
+            (PaintAnimationSettings::custom(
                 AnimationTime::Speed(speed),
                 |t| t,
             ),),

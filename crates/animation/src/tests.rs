@@ -1,5 +1,5 @@
 use super::*;
-use crate::{AnimationModule, AnimationTime, LayoutAnimationSettings};
+use crate::{AnimationModule, AnimationTime, Easing, LayoutAnimationSettings};
 use ::paint::prelude::*; // crate root. Why is this even here
 use geometry::{Color, Size};
 use layout::prelude::*;
@@ -38,7 +38,7 @@ fn app() -> App {
 }
 
 fn animated(ms: u64, easing: fn(f32) -> f32) -> LayoutAnimationSettings {
-    LayoutAnimationSettings::new(AnimationTime::Duration(Duration::from_millis(ms)), easing)
+    LayoutAnimationSettings::custom(AnimationTime::Duration(Duration::from_millis(ms)), easing)
 }
 
 fn scene(app: &mut App) -> (NodeId, Handle<Leaf>) {
@@ -583,13 +583,32 @@ fn interpolation_includes_size_padding_and_border() {
 }
 
 #[test]
+fn a_bezier_curve_eases_displayed_layout_on_frame() {
+    let mut app = app();
+    let (window, panel) = scene(&mut app);
+    let easing = Easing::cubic_bezier(0.42, 0.0, 1.0, 1.0);
+    *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
+        LayoutAnimationSettings::new(AnimationTime::Duration(Duration::from_secs(1)), easing);
+    app.emit(MoveTo(100.0), panel);
+    app.tick();
+    let started = start(&app, panel);
+    advance(&mut app, window, started + Duration::from_millis(500));
+
+    let shown = app.component::<Layout>(panel).unwrap().rect.x();
+    assert!((shown - 100.0 * easing.resolve(0.5)).abs() < 1e-5);
+    assert!(shown < 50.0);
+    advance(&mut app, window, started + Duration::from_secs(1));
+    assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 100.0);
+}
+
+#[test]
 fn speed_derives_duration_from_distance_and_retains_easing() {
     for (destination, seconds) in [(50.0, 0.5), (200.0, 2.0), (-100.0, 1.0)] {
         for easing in [|t| t, |t| t * t, |t| t * 2.0] as [fn(f32) -> f32; 3] {
             let mut app = app();
             let (window, panel) = scene(&mut app);
             *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
-                LayoutAnimationSettings::new(AnimationTime::Speed(100.0), easing);
+                LayoutAnimationSettings::custom(AnimationTime::Speed(100.0), easing);
             app.emit(MoveTo(destination), panel);
             app.tick();
             let duration = Duration::from_secs_f64(seconds);
@@ -629,7 +648,7 @@ fn speed_distance_accounts_for_every_layout_field() {
         let mut app = app();
         let (window, panel) = scene(&mut app);
         *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
-            LayoutAnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
+            LayoutAnimationSettings::custom(AnimationTime::Speed(100.0), |t| t);
         let from = *app.component::<Layout>(panel).unwrap();
         let mut target = *app.component::<ComputedLayout>(panel).unwrap();
         let fields = [
@@ -677,7 +696,7 @@ fn speed_uses_one_duration_for_all_fields_not_diagonal_distance() {
     let mut app = app();
     let (window, panel) = scene(&mut app);
     *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
-        LayoutAnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
+        LayoutAnimationSettings::custom(AnimationTime::Speed(100.0), |t| t);
     let from = *app.component::<Layout>(panel).unwrap();
     let target = ComputedLayout {
         rect: Rect::new(100.0, 100.0, 200.0, 150.0),
@@ -712,7 +731,7 @@ fn speed_retargeting_uses_displayed_layout_and_new_settings() {
     let mut app = app();
     let (window, panel) = scene(&mut app);
     *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
-        LayoutAnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
+        LayoutAnimationSettings::custom(AnimationTime::Speed(100.0), |t| t);
     app.emit(MoveTo(200.0), panel);
     app.tick();
     let started = start(&app, panel);
@@ -720,7 +739,7 @@ fn speed_retargeting_uses_displayed_layout_and_new_settings() {
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 50.0);
 
     *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
-        LayoutAnimationSettings::new(AnimationTime::Speed(200.0), |t| t * t);
+        LayoutAnimationSettings::custom(AnimationTime::Speed(200.0), |t| t * t);
     app.tick();
     let running = app
         .component::<Transition>(panel)
@@ -730,7 +749,7 @@ fn speed_retargeting_uses_displayed_layout_and_new_settings() {
         .unwrap();
     assert_eq!(running.started, started);
     assert_eq!(running.duration, Duration::from_secs(2));
-    assert_eq!((running.easing)(0.5), 0.5);
+    assert_eq!(running.easing.resolve(0.5), 0.5);
 
     app.emit(MoveTo(-50.0), panel);
     app.tick();
@@ -760,7 +779,7 @@ fn speed_is_inherited_and_zero_duration_still_overrides_it() {
     let mut app = app();
     let (window, panel) = scene(&mut app);
     *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
-        LayoutAnimationSettings::new(AnimationTime::Speed(100.0), |t| t);
+        LayoutAnimationSettings::custom(AnimationTime::Speed(100.0), |t| t);
     let child = app.spawn_with(
         panel,
         Leaf,
@@ -807,7 +826,7 @@ fn extreme_positive_speeds_do_not_overflow_or_divide_by_zero() {
         let mut app = app();
         let (window, panel) = scene(&mut app);
         *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
-            LayoutAnimationSettings::new(AnimationTime::Speed(speed), |t| t);
+            LayoutAnimationSettings::custom(AnimationTime::Speed(speed), |t| t);
         app.emit(MoveTo(100.0), panel);
         app.tick();
         let running = app
