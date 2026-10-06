@@ -45,7 +45,6 @@ members = [
     "crates/theme",
     "crates/text-input",
     "crates/mechanix-widgets",
-    "examples/basic",
 ]
 resolver = "3"
 
