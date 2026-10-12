@@ -4,7 +4,8 @@
 //! # Model
 //!
 //! - [`Ring`] is a resource over one io_uring. A module submits a typed
-//!   op, [`Ring::recvmsg`] or [`Ring::sendmsg`], and gets a [`Token`].
+//!   op, [`Ring::recvmsg`], [`Ring::sendmsg`] or [`Ring::timeout`], and
+//!   gets a [`Token`].
 //!   The ring owns the op's buffers until [`Ring::finish`] gives them
 //!   back as a [`Completed`]; the submitter keeps the fd open until then.
 //! - Every completion is one [`IoEvent`] signal. The module that owns
@@ -45,7 +46,8 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsRawFd, BorrowedFd, OwnedFd, RawFd};
+use std::time::Duration;
 
 use app::prelude::*;
 use io_uring::IoUring;
@@ -141,10 +143,21 @@ impl Ring {
         self.submit(fd, Op::send(buf, fds))
     }
 
-    fn submit(&mut self, fd: BorrowedFd<'_>, mut op: Box<Op>) -> Token {
+    /// A completion after `after`, with result `-ETIME`. Finish it like
+    /// any other op; its `Completed` is empty. Dropping the ring cancels
+    /// it.
+    pub fn timeout(&mut self, after: Duration) -> Token {
+        self.submit_raw(-1, Op::timeout(after))
+    }
+
+    fn submit(&mut self, fd: BorrowedFd<'_>, op: Box<Op>) -> Token {
+        self.submit_raw(fd.as_raw_fd(), op)
+    }
+
+    fn submit_raw(&mut self, fd: RawFd, mut op: Box<Op>) -> Token {
         let token = self.next;
         self.next += 1;
-        let entry = op.entry(fd.as_raw_fd()).user_data(token);
+        let entry = op.entry(fd).user_data(token);
         self.ops.insert(token, op);
         op::push(&mut self.uring, entry);
         Token(token)

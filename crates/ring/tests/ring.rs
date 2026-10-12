@@ -239,3 +239,36 @@ fn stop_raised_by_a_tick_ends_the_runner_without_waiting() {
         .recv_timeout(Duration::from_secs(5))
         .expect("a Stop raised by a tick left the runner blocked in the turn");
 }
+
+#[test]
+fn a_timeout_completes_with_etime_after_its_duration() {
+    let mut ring = Ring::new(8);
+    let start = Instant::now();
+    let t = ring.timeout(Duration::from_millis(20));
+    let events = ring.wait();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].token, t);
+    assert_eq!(events[0].result, -libc::ETIME);
+    assert!(start.elapsed() >= Duration::from_millis(20));
+    let done = ring.finish(t).unwrap();
+    assert!(done.buf.is_empty() && done.fds.is_empty());
+}
+
+#[test]
+fn a_shorter_timeout_submitted_later_completes_first() {
+    let mut ring = Ring::new(8);
+    let long = ring.timeout(Duration::from_millis(300));
+    let short = ring.timeout(Duration::from_millis(10));
+    let first = ring.wait();
+    assert_eq!(first[0].token, short);
+    assert!(first.iter().all(|e| e.token != long));
+}
+
+#[test]
+fn dropping_the_ring_does_not_wait_out_a_pending_timeout() {
+    let mut ring = Ring::new(8);
+    ring.timeout(Duration::from_secs(30));
+    let start = Instant::now();
+    drop(ring);
+    assert!(start.elapsed() < Duration::from_secs(1));
+}

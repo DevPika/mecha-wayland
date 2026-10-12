@@ -7,6 +7,7 @@ use std::io;
 use std::mem;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::ptr;
+use std::time::Duration;
 
 use io_uring::{opcode, squeue, types};
 
@@ -15,6 +16,7 @@ use crate::Completed;
 pub(crate) enum Kind {
     Recv,
     Send,
+    Timeout,
 }
 
 pub(crate) struct Op {
@@ -25,6 +27,9 @@ pub(crate) struct Op {
     iov: libc::iovec,
     msg: libc::msghdr,
     cmsg: Vec<u8>,
+    /// A timeout's duration. The kernel reads it after submission; the
+    /// box keeps it put until the completion.
+    ts: types::Timespec,
     pub(crate) result: Option<i32>,
 }
 
@@ -56,6 +61,7 @@ impl Op {
             iov: unsafe { mem::zeroed() },
             msg: unsafe { mem::zeroed() },
             cmsg,
+            ts: types::Timespec::new(),
             result: None,
         });
         op.iov.iov_base = op.buf.as_mut_ptr().cast();
@@ -86,6 +92,7 @@ impl Op {
             iov: unsafe { mem::zeroed() },
             msg: unsafe { mem::zeroed() },
             cmsg,
+            ts: types::Timespec::new(),
             result: None,
         });
         op.iov.iov_base = op.buf.as_mut_ptr().cast();
@@ -113,6 +120,24 @@ impl Op {
         op
     }
 
+    /// A timeout that completes after `after` with `-ETIME`.
+    pub(crate) fn timeout(after: Duration) -> Box<Op> {
+        // SAFETY: as in `recv`.
+        Box::new(Op {
+            kind: Kind::Timeout,
+            buf: Vec::new(),
+            fds: Vec::new(),
+            raw_fds: Vec::new(),
+            iov: unsafe { mem::zeroed() },
+            msg: unsafe { mem::zeroed() },
+            cmsg: Vec::new(),
+            ts: types::Timespec::new()
+                .sec(after.as_secs())
+                .nsec(after.subsec_nanos()),
+            result: None,
+        })
+    }
+
     /// The submission entry. Valid while this box lives, which is until
     /// `complete`.
     ///
@@ -128,6 +153,7 @@ impl Op {
             Kind::Send => opcode::SendMsg::new(types::Fd(fd), &self.msg)
                 .flags(libc::MSG_NOSIGNAL as u32)
                 .build(),
+            Kind::Timeout => opcode::Timeout::new(&self.ts).build(),
         }
     }
 
