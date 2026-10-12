@@ -191,6 +191,7 @@ pub struct Decoder<'a> {
     big: bool,
     fds: &'a [UnixFd],
     depth: u32,
+    limit: u32,
 }
 
 macro_rules! read_num {
@@ -215,6 +216,16 @@ impl<'a> Decoder<'a> {
             big: big_endian,
             fds,
             depth: 0,
+            limit: MAX_DEPTH,
+        }
+    }
+
+    /// A decoder with no depth cap, for bytes this crate encoded itself.
+    /// Never use it on bytes from a peer.
+    pub(crate) fn unbounded(buf: &'a [u8], big_endian: bool, fds: &'a [UnixFd]) -> Self {
+        Decoder {
+            limit: u32::MAX,
+            ..Decoder::new(buf, big_endian, fds)
         }
     }
 
@@ -345,7 +356,7 @@ impl<'a> Decoder<'a> {
 
     pub(crate) fn enter(&mut self) -> Result<(), DecodeError> {
         self.depth += 1;
-        if self.depth > MAX_DEPTH {
+        if self.depth > self.limit {
             return Err(DecodeError::TooDeep);
         }
         Ok(())

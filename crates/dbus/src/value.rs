@@ -26,12 +26,14 @@ pub enum Value {
     ObjectPath(ObjectPath),
     Signature(Signature),
     Fd(UnixFd),
-    /// Every item must have the signature `elem`.
+    /// Every item must have the signature `elem`, which must be exactly one
+    /// complete type. Encoding panics otherwise: that is a caller bug.
     Array {
         elem: Signature,
         items: Vec<Value>,
     },
-    /// Every key must have `key` (a basic type), every value `val`.
+    /// Every key must have `key` (exactly one basic type) and every value
+    /// `val` (exactly one complete type). Encoding panics otherwise.
     Dict {
         key: Signature,
         val: Signature,
@@ -79,11 +81,23 @@ impl Value {
             Value::Fd(_) => 'h',
             Value::Variant(_) => 'v',
             Value::Array { elem, .. } => {
+                assert!(
+                    elem.is_single(),
+                    "dbus: an array's element signature must be one complete type, not {elem:?}"
+                );
                 out.push('a');
                 out.push_str(elem.as_str());
                 return;
             }
             Value::Dict { key, val, .. } => {
+                assert!(
+                    key.as_str().len() == 1 && signature::is_basic(key.as_str().as_bytes()[0]),
+                    "dbus: a dict's key must be one basic type, not {key:?}"
+                );
+                assert!(
+                    val.is_single(),
+                    "dbus: a dict's value must be one complete type, not {val:?}"
+                );
                 out.push_str("a{");
                 out.push_str(key.as_str());
                 out.push_str(val.as_str());
@@ -131,7 +145,9 @@ impl Value {
     pub fn from_typed<T: Encode + ?Sized>(v: &T) -> Value {
         let (bytes, fds) = types::to_bytes(v);
         let sig = T::signature();
-        let mut d = Decoder::new(&bytes, false, &fds);
+        // Our own bytes, so no peer depth cap: a value nested near the
+        // cap gains levels here and must still come back.
+        let mut d = Decoder::unbounded(&bytes, false, &fds);
         Value::decode_raw(sig.as_str(), &mut d).expect("dbus: re-decoding a value just encoded")
     }
 
@@ -382,5 +398,36 @@ mod tests {
             from_bytes::<Value>(&empty, &[]),
             Err(DecodeError::BadVariant(_))
         ));
+    }
+
+    #[test]
+    fn a_deep_value_survives_from_typed() {
+        let mut v = Value::U8(1);
+        for _ in 0..63 {
+            v = Value::Variant(Box::new(v));
+        }
+        let wrapped = Value::from(vec![v]);
+        assert_eq!(wrapped.signature(), "av");
+    }
+
+    #[test]
+    #[should_panic(expected = "dbus: an array's element signature")]
+    fn an_array_needs_a_single_element_type() {
+        let bad = Value::Array {
+            elem: Signature::default(),
+            items: Vec::new(),
+        };
+        let _ = to_bytes(&bad);
+    }
+
+    #[test]
+    #[should_panic(expected = "dbus: a dict's key must be one basic type")]
+    fn a_dict_needs_a_basic_key() {
+        let bad = Value::Dict {
+            key: Signature::from_valid("v".to_owned()),
+            val: Signature::from_valid("u".to_owned()),
+            entries: Vec::new(),
+        };
+        let _ = to_bytes(&bad);
     }
 }
