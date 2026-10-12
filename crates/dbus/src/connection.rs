@@ -201,10 +201,14 @@ impl Connection {
     fn internal_reply(&mut self, i: Internal, msg: Message) -> Vec<Out> {
         match i {
             Internal::Hello => {
-                if let Ok((name,)) = msg.body::<(BusName,)>() {
+                if msg.kind() == MessageKind::MethodReturn
+                    && let Ok((name,)) = msg.body::<(BusName,)>()
+                {
                     self.unique_name = Some(name);
+                    return Vec::new();
                 }
-                Vec::new()
+                // Refused, or no name: install would wait forever.
+                self.die()
             }
         }
     }
@@ -269,5 +273,24 @@ mod tests {
         assert!(c.sending.is_none());
         let queued: Vec<&[u8]> = c.outbox.iter().map(|(b, _)| b.as_slice()).collect();
         assert_eq!(queued, [b"def".as_slice(), b"next".as_slice()]);
+    }
+
+    #[test]
+    fn a_refused_hello_kills_the_connection() {
+        let (mut c, _peer) = conn();
+        c.hello();
+        let reply = Message::error(1, "org.freedesktop.DBus.Error.AccessDenied", "no");
+        c.handle(reply);
+        assert!(c.dead);
+        assert!(c.unique_name.is_none());
+    }
+
+    #[test]
+    fn a_hello_reply_without_a_name_kills_the_connection() {
+        let (mut c, _peer) = conn();
+        c.hello();
+        c.handle(Message::method_return(1).with_body(&(1u32,)));
+        assert!(c.dead);
+        assert!(c.unique_name.is_none());
     }
 }

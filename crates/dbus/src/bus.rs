@@ -187,7 +187,7 @@ impl Module for DBusModule {
             Ring::turn(app);
         }
         if let Some(c) = app.resource::<DBus>().conns.iter().find(|c| c.dead) {
-            panic!("dbus: {:?} closed before answering Hello", c.id);
+            panic!("dbus: {:?} closed or refused Hello", c.id);
         }
     }
 }
