@@ -14,9 +14,10 @@ use crate::connection::{Connection, DAEMON, DAEMON_PATH, READ_CAPACITY};
 use crate::matching::{MatchId, MatchRule};
 use crate::message::Message;
 use crate::names::{BusName, ErrorName, InterfaceName, MemberName, ObjectPath};
-use crate::server::{ExportError, ExportId, IncomingCall, InterfaceSpec};
+use crate::server::{ExportError, ExportId, IncomingCall, InterfaceSpec, PropertyError};
 use crate::signals::{Out, emit};
 use crate::types::Body;
+use crate::value::Value;
 
 /// Which bus. `Custom` is any other address: a private bus, a test's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -165,6 +166,18 @@ impl<'a> Bus<'a> {
 
     pub fn unexport(&mut self, id: ExportId) {
         self.conn.unexport(id);
+    }
+
+    /// Update an exported property. Changes made in one turn go out as
+    /// one `PropertiesChanged` per object and interface at `BeforeWait`;
+    /// a value equal to the stored one sends nothing.
+    pub fn set_property_value(
+        &mut self,
+        export: ExportId,
+        name: &str,
+        value: Value,
+    ) -> Result<(), PropertyError> {
+        self.conn.set_property_value(export, name, value)
     }
 
     /// Broadcast a signal.

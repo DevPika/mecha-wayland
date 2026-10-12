@@ -10,6 +10,7 @@ use crate::matching::MatchId;
 use crate::message::Message;
 use crate::names::BusName;
 use crate::server::{ExportId, IncomingCall};
+use crate::value::Value;
 
 /// One signal to raise. Connection code builds these while it holds the
 /// `DBus` resource; [`emit`] raises them once it is released.
@@ -76,3 +77,15 @@ pub struct MethodCallReceived {
     pub call: IncomingCall,
 }
 impl Signal for MethodCallReceived {}
+
+/// A peer's `Properties.Set` on a `ReadWrite` property, already checked
+/// for type. Accept with `set_property_value` and `DBus::reply(&call,
+/// &())`, or refuse with `DBus::reply_error`.
+#[derive(Debug, Clone)]
+pub struct PropertySetRequested {
+    pub export: ExportId,
+    pub name: String,
+    pub value: Value,
+    pub call: IncomingCall,
+}
+impl Signal for PropertySetRequested {}

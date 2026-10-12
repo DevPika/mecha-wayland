@@ -4,7 +4,7 @@
 //! `App`.
 
 use std::cmp::Reverse;
-use std::collections::{BinaryHeap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::time::Instant;
@@ -12,17 +12,21 @@ use std::time::Instant;
 use ring::{Completed, IoEvent, Ring, Token};
 
 use crate::bus::BusId;
-use crate::client::{CallError, CallId, MethodCall};
+use crate::client::{CallError, CallId, MethodCall, PROPERTIES};
 use crate::matching::{Entry, MatchId, MatchRule, Matches, Owner};
 use crate::message::{Flags, Message, MessageKind};
 use crate::names::{BusName, ErrorName, InterfaceName, MemberName, ObjectPath};
 use crate::server::{
-    Export, ExportError, ExportId, IncomingCall, InterfaceSpec, STANDARD, Server, errors,
+    Access, Export, ExportError, ExportId, INTROSPECTABLE, IncomingCall, InterfaceSpec, PEER,
+    PropertyError, STANDARD, Server, errors,
 };
 use crate::signals::{
-    MatchFailed, MethodCallReceived, MethodReply, NameAcquired, NameLost, Out, SignalReceived, out,
+    MatchFailed, MethodCallReceived, MethodReply, NameAcquired, NameLost, Out,
+    PropertySetRequested, SignalReceived, out,
 };
+use crate::standard;
 use crate::types::Body;
+use crate::value::Value;
 
 pub(crate) const DAEMON: &str = "org.freedesktop.DBus";
 pub(crate) const DAEMON_PATH: &str = "/org/freedesktop/DBus";
@@ -73,8 +77,11 @@ pub(crate) struct Connection {
     pub(crate) server: Server,
 }
 
+/// Members a call without an interface may mean on any path.
+const STANDARD_MEMBERS: [&str; 6] = ["Introspect", "Ping", "GetMachineId", "Get", "GetAll", "Set"];
 /// Where an incoming call goes.
 enum Route {
+    Standard,
     Export(u64),
     Error(&'static str, String),
 }
@@ -170,6 +177,30 @@ impl Connection {
             .with_destination_opt(sender);
             self.queue(&m);
         }
+        let mut changes = Vec::new();
+        for e in self.server.exports.values_mut() {
+            if e.changed.is_empty() {
+                continue;
+            }
+            let names = std::mem::take(&mut e.changed);
+            let changed: BTreeMap<String, Value> = names
+                .into_iter()
+                .map(|n| {
+                    let v = e.values[&n].clone();
+                    (n, v)
+                })
+                .collect();
+            changes.push(
+                Message::signal(e.path.clone(), PROPERTIES, "PropertiesChanged").with_body(&(
+                    e.spec.name.as_str(),
+                    changed,
+                    Vec::<String>::new(),
+                )),
+            );
+        }
+        for m in changes {
+            self.queue(&m);
+        }
         let bus = self.id;
         let outs = self
             .deferred
@@ -242,6 +273,7 @@ impl Connection {
                 export: ExportId { bus: self.id, n },
                 call,
             })],
+            Route::Standard => self.standard(call),
             Route::Error(name, text) => {
                 self.answer_error(&call, name, &text);
                 Vec::new()
@@ -249,11 +281,185 @@ impl Connection {
         }
     }
 
+    /// Introspectable, Peer and Properties, on any path.
+    fn standard(&mut self, call: IncomingCall) -> Vec<Out> {
+        let msg = call.message();
+        let member = msg
+            .member()
+            .expect("dbus: a call has a member")
+            .as_str()
+            .to_owned();
+        let iface = match msg.interface() {
+            Some(i) => i.as_str().to_owned(),
+            None => match member.as_str() {
+                "Introspect" => INTROSPECTABLE,
+                "Ping" | "GetMachineId" => PEER,
+                _ => PROPERTIES,
+            }
+            .to_owned(),
+        };
+        let sig = msg.signature().as_str().to_owned();
+        let path = msg.path().expect("dbus: a call has a path").clone();
+        let want = match (iface.as_str(), member.as_str()) {
+            (INTROSPECTABLE, "Introspect") | (PEER, "Ping") | (PEER, "GetMachineId") => "",
+            (PROPERTIES, "Get") => "ss",
+            (PROPERTIES, "GetAll") => "s",
+            (PROPERTIES, "Set") => "ssv",
+            _ => {
+                self.answer_error(
+                    &call,
+                    errors::UNKNOWN_METHOD,
+                    &format!("{iface} has no method {member}"),
+                );
+                return Vec::new();
+            }
+        };
+        if sig != want {
+            self.answer_error(
+                &call,
+                errors::INVALID_ARGS,
+                &format!("{member} takes ({want}), not ({sig})"),
+            );
+            return Vec::new();
+        }
+        match member.as_str() {
+            "Introspect" => {
+                let xml = standard::introspect(&path, self.server.exports.values());
+                self.answer(&call, &(xml,));
+            }
+            "Ping" => self.answer(&call, &()),
+            "GetMachineId" => match standard::machine_id() {
+                Ok(id) => self.answer(&call, &(id,)),
+                Err(e) => self.answer_error(&call, errors::FAILED, &e.to_string()),
+            },
+            "Get" => {
+                let (i, name): (String, String) = call.args().expect("dbus: checked as ss");
+                match self.property(&path, &i, &name) {
+                    Ok((_, _, value)) => self.answer(&call, &(value,)),
+                    Err((err, text)) => self.answer_error(&call, err, &text),
+                }
+            }
+            "GetAll" => {
+                let (i,): (String,) = call.args().expect("dbus: checked as s");
+                match self.server.export_at(&path, &i) {
+                    Some((_, e)) => {
+                        let all: BTreeMap<String, Value> = e.values.clone();
+                        self.answer(&call, &(all,));
+                    }
+                    None => self.answer_error(
+                        &call,
+                        errors::UNKNOWN_INTERFACE,
+                        &format!("No interface {i} at {path}"),
+                    ),
+                }
+            }
+            "Set" => return self.property_set(call, &path),
+            _ => unreachable!("dbus: every standard member is listed above"),
+        }
+        Vec::new()
+    }
+
+    /// A property's export, access and current value.
+    fn property(
+        &self,
+        path: &ObjectPath,
+        iface: &str,
+        name: &str,
+    ) -> Result<(u64, Access, Value), (&'static str, String)> {
+        let (n, e) = self.server.export_at(path, iface).ok_or((
+            errors::UNKNOWN_INTERFACE,
+            format!("No interface {iface} at {path}"),
+        ))?;
+        let spec = e
+            .spec
+            .properties
+            .iter()
+            .find(|p| p.name.as_str() == name)
+            .ok_or((
+                errors::UNKNOWN_PROPERTY,
+                format!("No property {name} on {iface}"),
+            ))?;
+        Ok((n, spec.access, e.values[name].clone()))
+    }
+
+    fn property_set(&mut self, call: IncomingCall, path: &ObjectPath) -> Vec<Out> {
+        let (i, name, value): (String, String, Value) = call.args().expect("dbus: checked as ssv");
+        match self.property(path, &i, &name) {
+            Err((err, text)) => {
+                self.answer_error(&call, err, &text);
+                Vec::new()
+            }
+            Ok((_, Access::Read, _)) => {
+                self.answer_error(
+                    &call,
+                    errors::PROPERTY_READ_ONLY,
+                    &format!("{name} is read-only"),
+                );
+                Vec::new()
+            }
+            Ok((_, Access::ReadWrite, current)) if value.signature() != current.signature() => {
+                let text = format!(
+                    "{name} is a {}, not a {}",
+                    current.signature(),
+                    value.signature()
+                );
+                self.answer_error(&call, errors::INVALID_ARGS, &text);
+                Vec::new()
+            }
+            Ok((n, Access::ReadWrite, _)) => vec![out(PropertySetRequested {
+                export: ExportId { bus: self.id, n },
+                name,
+                value,
+                call,
+            })],
+        }
+    }
+
+    pub(crate) fn set_property_value(
+        &mut self,
+        export: ExportId,
+        name: &str,
+        value: Value,
+    ) -> Result<(), PropertyError> {
+        let bus = self.id;
+        let e = self
+            .server
+            .exports
+            .get_mut(&export.n)
+            .filter(|_| export.bus == bus)
+            .ok_or(PropertyError::UnknownExport)?;
+        let spec = e
+            .spec
+            .properties
+            .iter()
+            .find(|p| p.name.as_str() == name)
+            .ok_or(PropertyError::UnknownProperty)?;
+        let found = value.signature();
+        if found != spec.sig {
+            return Err(PropertyError::Signature {
+                expected: spec.sig.clone(),
+                found,
+            });
+        }
+        if e.values.get(name) == Some(&value) {
+            return Ok(());
+        }
+        e.values.insert(name.to_owned(), value);
+        e.changed.insert(name.to_owned());
+        Ok(())
+    }
+
     /// The export a call is for, or the error that answers it.
     fn route(&self, call: &IncomingCall) -> Route {
         let msg = call.message();
         let path = msg.path().expect("dbus: parse requires a call's path");
         let member = msg.member().expect("dbus: parse requires a call's member");
+        if msg
+            .interface()
+            .is_some_and(|i| STANDARD.contains(&i.as_str()))
+        {
+            return Route::Standard;
+        }
         let here: Vec<(u64, &Export)> = self.server.at_path(path).collect();
         let candidates: Vec<(u64, &Export)> = match msg.interface() {
             Some(iface) => {
@@ -288,6 +494,9 @@ impl Connection {
                 ),
                 Some(_) => Route::Export(*n),
             },
+            [] if msg.interface().is_none() && STANDARD_MEMBERS.contains(&member.as_str()) => {
+                Route::Standard
+            }
             [] if here.is_empty() => {
                 Route::Error(errors::UNKNOWN_OBJECT, format!("No object at {path}"))
             }

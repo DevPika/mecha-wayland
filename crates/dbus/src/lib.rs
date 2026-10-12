@@ -13,6 +13,7 @@ mod names;
 mod server;
 mod signals;
 mod signature;
+mod standard;
 mod types;
 mod value;
 mod wire;
@@ -28,7 +29,8 @@ pub use message::{Flags, MAX_MESSAGE, Message, MessageKind};
 pub use names::{BusName, ErrorName, InterfaceName, MemberName, NameError, ObjectPath};
 pub use server::{Access, ExportError, ExportId, IncomingCall, InterfaceSpec, PropertyError};
 pub use signals::{
-    MatchFailed, MethodCallReceived, MethodReply, NameAcquired, NameLost, SignalReceived,
+    MatchFailed, MethodCallReceived, MethodReply, NameAcquired, NameLost, PropertySetRequested,
+    SignalReceived,
 };
 pub use signature::Signature;
 pub use types::{Basic, Body, Decode, Encode, FromBody, Type, from_bytes, to_bytes};
