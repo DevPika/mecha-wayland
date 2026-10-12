@@ -604,6 +604,9 @@ impl Connection {
         }
         if self.reading == Some(e.token) {
             self.reading = None;
+            if self.dead {
+                return Vec::new();
+            }
             if e.result <= 0 {
                 return self.die();
             }
@@ -991,6 +994,38 @@ mod tests {
         assert!(c.sending.is_none());
         let queued: Vec<&[u8]> = c.outbox.iter().map(|(b, _)| b.as_slice()).collect();
         assert_eq!(queued, [b"def".as_slice(), b"next".as_slice()]);
+    }
+
+    #[test]
+    fn a_read_completing_after_death_is_ignored() {
+        let (mut c, _peer) = conn();
+        let mut ring = Ring::new(4);
+        c.die();
+        let t = Token::from_raw(9);
+        c.reading = Some(t);
+        let bytes = Message::signal(
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "NameAcquired",
+        )
+        .with_sender("org.freedesktop.DBus")
+        .with_body(&(":1.1",))
+        .encode(5)
+        .0;
+        let outs = c.on_io(
+            &IoEvent {
+                token: t,
+                result: bytes.len() as i32,
+            },
+            Completed {
+                buf: bytes,
+                fds: Vec::new(),
+            },
+            &mut ring,
+        );
+        assert!(outs.is_empty());
+        assert!(c.reading.is_none());
+        assert!(c.inbox.is_empty());
     }
 
     #[test]
