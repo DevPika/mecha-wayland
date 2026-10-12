@@ -259,7 +259,13 @@ impl Message {
     }
 
     /// The whole message with `serial`, and the fds to send with it.
+    /// For messages built here; a received big-endian message must be
+    /// rebuilt with `with_body`, since its body is not little-endian.
     pub fn encode(&self, serial: u32) -> (Vec<u8>, Vec<UnixFd>) {
+        assert!(
+            !self.big_endian,
+            "dbus: a received big-endian message cannot be re-sent as is; rebuild it with with_body"
+        );
         let mut e = Encoder::new();
         e.u8(b'l');
         e.u8(self.kind as u8);
@@ -523,6 +529,33 @@ mod tests {
         assert_eq!(msg.member().unwrap().as_str(), "C");
         assert!(msg.is_big_endian());
         assert_eq!(msg.body::<(u32,)>(), Ok((7,)));
+    }
+
+    #[test]
+    #[should_panic(expected = "dbus: a received big-endian message")]
+    fn a_received_big_endian_message_cannot_be_re_encoded() {
+        let mut m = Vec::new();
+        m.extend_from_slice(b"B\x04\x00\x01");
+        m.extend_from_slice(&4u32.to_be_bytes());
+        m.extend_from_slice(&9u32.to_be_bytes());
+        m.extend_from_slice(&55u32.to_be_bytes());
+        m.extend_from_slice(b"\x01\x01o\x00");
+        m.extend_from_slice(&2u32.to_be_bytes());
+        m.extend_from_slice(b"/a\x00");
+        m.extend_from_slice(&[0; 5]);
+        m.extend_from_slice(b"\x02\x01s\x00");
+        m.extend_from_slice(&3u32.to_be_bytes());
+        m.extend_from_slice(b"a.b\x00");
+        m.extend_from_slice(&[0; 4]);
+        m.extend_from_slice(b"\x03\x01s\x00");
+        m.extend_from_slice(&1u32.to_be_bytes());
+        m.extend_from_slice(b"C\x00");
+        m.extend_from_slice(&[0; 6]);
+        m.extend_from_slice(b"\x08\x01g\x00\x01u\x00");
+        m.push(0);
+        m.extend_from_slice(&7u32.to_be_bytes());
+        let msg = Message::parse(&m, &mut VecDeque::new()).unwrap();
+        let _ = msg.encode(1);
     }
 
     #[test]
