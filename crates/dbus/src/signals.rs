@@ -3,6 +3,9 @@
 
 use app::prelude::*;
 
+use crate::client::{CallError, CallId};
+use crate::message::Message;
+
 /// One signal to raise. Connection code builds these while it holds the
 /// `DBus` resource; [`emit`] raises them once it is released.
 pub(crate) type Out = Box<dyn FnOnce(&mut App)>;
@@ -16,3 +19,12 @@ pub(crate) fn emit(app: &mut App, outs: Vec<Out>) {
         o(app);
     }
 }
+
+/// The answer to one call. Exactly one per [`CallId`], unless the call
+/// was cancelled first.
+#[derive(Debug, Clone)]
+pub struct MethodReply {
+    pub call: CallId,
+    pub result: Result<Message, CallError>,
+}
+impl Signal for MethodReply {}

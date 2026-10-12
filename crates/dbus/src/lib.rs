@@ -4,6 +4,7 @@
 mod address;
 mod auth;
 mod bus;
+mod client;
 mod connection;
 mod fd;
 mod message;
@@ -18,9 +19,11 @@ mod wire;
 pub mod fake;
 
 pub use bus::{Bus, BusId, DBus, DBusModule};
+pub use client::{CallError, CallId, DEFAULT_TIMEOUT, MethodCall, ObjectRef};
 pub use fd::UnixFd;
 pub use message::{Flags, MAX_MESSAGE, Message, MessageKind};
 pub use names::{BusName, ErrorName, InterfaceName, MemberName, NameError, ObjectPath};
+pub use signals::MethodReply;
 pub use signature::Signature;
 pub use types::{Basic, Body, Decode, Encode, FromBody, Type, from_bytes, to_bytes};
 pub use value::{PropMap, PropMapExt, Value};

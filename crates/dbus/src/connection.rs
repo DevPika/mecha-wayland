@@ -3,16 +3,19 @@
 //! Methods return the signals to raise as [`Out`]s; they never touch the
 //! `App`.
 
-use std::collections::{HashMap, VecDeque};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, VecDeque};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
+use std::time::Instant;
 
 use ring::{Completed, IoEvent, Ring, Token};
 
 use crate::bus::BusId;
-use crate::message::{Message, MessageKind};
+use crate::client::{CallError, CallId, MethodCall};
+use crate::message::{Flags, Message, MessageKind};
 use crate::names::BusName;
-use crate::signals::Out;
+use crate::signals::{MethodReply, Out, out};
 
 pub(crate) const DAEMON: &str = "org.freedesktop.DBus";
 pub(crate) const DAEMON_PATH: &str = "/org/freedesktop/DBus";
@@ -25,6 +28,8 @@ pub(crate) const MAX_FDS: usize = 253;
 pub(crate) enum Pending {
     /// The connection's own bookkeeping; answered internally.
     Internal(Internal),
+    /// A caller's call; its answer is a `MethodReply`.
+    User { deadline: Instant },
 }
 
 pub(crate) enum Internal {
@@ -45,6 +50,13 @@ pub(crate) struct Connection {
     outbox: VecDeque<(Vec<u8>, Vec<OwnedFd>)>,
     next_serial: u32,
     pending: HashMap<u32, Pending>,
+    /// Every `User` call's deadline, earliest first. Entries for calls
+    /// already answered are skipped when they surface.
+    deadlines: BinaryHeap<Reverse<(Instant, u32)>>,
+    /// Ring timeouts in flight, and the deadline each was armed for.
+    timers: Vec<(Token, Instant)>,
+    /// Calls that failed before being sent; answered at `BeforeWait`.
+    deferred: Vec<(u32, CallError)>,
 }
 
 impl Connection {
@@ -62,6 +74,9 @@ impl Connection {
             outbox: VecDeque::new(),
             next_serial: 1,
             pending: HashMap::new(),
+            deadlines: BinaryHeap::new(),
+            timers: Vec::new(),
+            deferred: Vec::new(),
         }
     }
 
@@ -117,15 +132,114 @@ impl Connection {
     }
 
     pub(crate) fn owns(&self, t: Token) -> bool {
-        self.reading == Some(t) || self.sending == Some(t)
+        self.reading == Some(t)
+            || self.sending == Some(t)
+            || self.timers.iter().any(|&(tt, _)| tt == t)
     }
 
     pub(crate) fn before_wait(&mut self, ring: &mut Ring) -> Vec<Out> {
+        let bus = self.id;
+        let outs = self
+            .deferred
+            .drain(..)
+            .map(|(serial, e)| {
+                out(MethodReply {
+                    call: CallId { bus, serial },
+                    result: Err(e),
+                })
+            })
+            .collect();
         self.flush(ring);
-        Vec::new()
+        self.arm_timer(ring);
+        outs
+    }
+
+    pub(crate) fn call(&mut self, call: MethodCall) -> CallId {
+        let fds_refused = !call.msg.fds().is_empty() && !self.fds_ok;
+        let serial = if fds_refused {
+            self.serial()
+        } else {
+            self.queue(&call.msg)
+        };
+        if fds_refused {
+            self.deferred.push((serial, CallError::FdsUnsupported));
+        } else if self.dead {
+            self.deferred.push((serial, CallError::Disconnected));
+        } else {
+            let deadline = Instant::now() + call.timeout;
+            self.pending.insert(serial, Pending::User { deadline });
+            self.deadlines.push(Reverse((deadline, serial)));
+        }
+        CallId {
+            bus: self.id,
+            serial,
+        }
+    }
+
+    pub(crate) fn call_no_reply(&mut self, call: MethodCall) {
+        if !call.msg.fds().is_empty() && !self.fds_ok {
+            return;
+        }
+        let flags = call.msg.flags() | Flags::NO_REPLY_EXPECTED;
+        let msg = call.msg.with_flags(flags);
+        self.queue(&msg);
+    }
+
+    /// Forget a call: no `MethodReply` will be raised for it.
+    pub(crate) fn cancel(&mut self, serial: u32) {
+        if matches!(self.pending.get(&serial), Some(Pending::User { .. })) {
+            self.pending.remove(&serial);
+        }
+        self.deferred.retain(|(s, _)| *s != serial);
+    }
+
+    /// Arm a ring timeout for the earliest pending deadline unless one
+    /// armed already fires by then.
+    fn arm_timer(&mut self, ring: &mut Ring) {
+        while let Some(Reverse((_, s))) = self.deadlines.peek() {
+            if matches!(self.pending.get(s), Some(Pending::User { .. })) {
+                break;
+            }
+            self.deadlines.pop();
+        }
+        let Some(&Reverse((at, _))) = self.deadlines.peek() else {
+            return;
+        };
+        if self.timers.iter().any(|&(_, t)| t <= at) {
+            return;
+        }
+        let token = ring.timeout(at.saturating_duration_since(Instant::now()));
+        self.timers.push((token, at));
+    }
+
+    /// Fail every call whose deadline has passed.
+    fn expire(&mut self) -> Vec<Out> {
+        let now = Instant::now();
+        let mut outs = Vec::new();
+        while let Some(&Reverse((at, serial))) = self.deadlines.peek() {
+            if at > now {
+                break;
+            }
+            self.deadlines.pop();
+            if let Some(Pending::User { .. }) = self.pending.get(&serial) {
+                self.pending.remove(&serial);
+                outs.push(out(MethodReply {
+                    call: CallId {
+                        bus: self.id,
+                        serial,
+                    },
+                    result: Err(CallError::Timeout),
+                }));
+            }
+        }
+        outs
     }
 
     pub(crate) fn on_io(&mut self, e: &IoEvent, done: Completed, ring: &mut Ring) -> Vec<Out> {
+        if let Some(i) = self.timers.iter().position(|&(t, _)| t == e.token) {
+            self.timers.swap_remove(i);
+            return self.expire();
+        }
         if self.reading == Some(e.token) {
             self.reading = None;
             if e.result <= 0 {
@@ -191,6 +305,24 @@ impl Connection {
                 };
                 match self.pending.remove(&serial) {
                     Some(Pending::Internal(i)) => self.internal_reply(i, msg),
+                    Some(Pending::User { .. }) => {
+                        let call = CallId {
+                            bus: self.id,
+                            serial,
+                        };
+                        let result = if msg.kind() == MessageKind::Error {
+                            Err(CallError::Remote {
+                                name: msg
+                                    .error_name()
+                                    .cloned()
+                                    .expect("dbus: parse requires an error name"),
+                                message: msg.error_text().unwrap_or_default(),
+                            })
+                        } else {
+                            Ok(msg)
+                        };
+                        vec![out(MethodReply { call, result })]
+                    }
                     None => Vec::new(),
                 }
             }

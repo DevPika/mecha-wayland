@@ -8,8 +8,9 @@ use ring::prelude::*;
 
 use crate::address;
 use crate::auth;
+use crate::client::{CallId, MethodCall, ObjectRef};
 use crate::connection::{Connection, READ_CAPACITY};
-use crate::names::BusName;
+use crate::names::{BusName, ObjectPath};
 use crate::signals::{Out, emit};
 
 /// Which bus. `Custom` is any other address: a private bus, a test's.
@@ -101,6 +102,35 @@ impl<'a> Bus<'a> {
     /// False once the bus went away; see `BusDisconnected`.
     pub fn is_connected(&self) -> bool {
         !self.conn.dead
+    }
+
+    /// One remote object on this bus.
+    pub fn object(
+        self,
+        destination: impl Into<BusName>,
+        path: impl Into<ObjectPath>,
+    ) -> ObjectRef<'a> {
+        ObjectRef {
+            conn: self.conn,
+            destination: destination.into(),
+            path: path.into(),
+        }
+    }
+
+    /// Send `call`; its answer is a `MethodReply` with the returned id.
+    pub fn send(&mut self, call: MethodCall) -> CallId {
+        self.conn.call(call)
+    }
+
+    pub fn send_no_reply(&mut self, call: MethodCall) {
+        self.conn.call_no_reply(call);
+    }
+
+    /// No `MethodReply` will be raised for `call`.
+    pub fn cancel(&mut self, call: CallId) {
+        if call.bus == self.conn.id {
+            self.conn.cancel(call.serial);
+        }
     }
 }
 
