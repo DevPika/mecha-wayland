@@ -7,6 +7,7 @@ edition = "2024"
 
 [dependencies]
 app.workspace = true
+dbus.workspace = true
 atlas = { workspace = true, features = ["svg"] }
 geometry.workspace = true
 gles.workspace = true
