@@ -39,8 +39,8 @@ pub(crate) const MAX_FDS: usize = 253;
 pub(crate) enum Pending {
     /// The connection's own bookkeeping; answered internally.
     Internal(Internal),
-    /// A caller's call; its answer is a `MethodReply`.
-    User { deadline: Instant },
+    /// A caller's call; its answer is a `MethodReply`. Its deadline lives in the `deadlines` heap.
+    User,
 }
 
 pub(crate) enum Internal {
@@ -137,6 +137,7 @@ impl Connection {
     }
 
     /// Whether a send is queued or in flight.
+    #[cfg(feature = "fake")]
     pub(crate) fn has_pending_output(&self) -> bool {
         !self.dead && (!self.outbox.is_empty() || self.sending.is_some())
     }
@@ -529,7 +530,7 @@ impl Connection {
             self.deferred.push((serial, CallError::Disconnected));
         } else {
             let deadline = Instant::now() + call.timeout;
-            self.pending.insert(serial, Pending::User { deadline });
+            self.pending.insert(serial, Pending::User);
             self.deadlines.push(Reverse((deadline, serial)));
         }
         CallId {
@@ -549,7 +550,7 @@ impl Connection {
 
     /// Forget a call: no `MethodReply` will be raised for it.
     pub(crate) fn cancel(&mut self, serial: u32) {
-        if matches!(self.pending.get(&serial), Some(Pending::User { .. })) {
+        if matches!(self.pending.get(&serial), Some(Pending::User)) {
             self.pending.remove(&serial);
         }
         self.deferred.retain(|(s, _)| *s != serial);
@@ -559,7 +560,7 @@ impl Connection {
     /// armed already fires by then.
     fn arm_timer(&mut self, ring: &mut Ring) {
         while let Some(Reverse((_, s))) = self.deadlines.peek() {
-            if matches!(self.pending.get(s), Some(Pending::User { .. })) {
+            if matches!(self.pending.get(s), Some(Pending::User)) {
                 break;
             }
             self.deadlines.pop();
@@ -583,7 +584,7 @@ impl Connection {
                 break;
             }
             self.deadlines.pop();
-            if let Some(Pending::User { .. }) = self.pending.get(&serial) {
+            if let Some(Pending::User) = self.pending.get(&serial) {
                 self.pending.remove(&serial);
                 outs.push(out(MethodReply {
                     call: CallId {
@@ -674,7 +675,7 @@ impl Connection {
                 };
                 match self.pending.remove(&serial) {
                     Some(Pending::Internal(i)) => self.internal_reply(i, msg),
-                    Some(Pending::User { .. }) => {
+                    Some(Pending::User) => {
                         let call = CallId {
                             bus: self.id,
                             serial,
@@ -924,7 +925,7 @@ impl Connection {
         let mut failed: Vec<u32> = self
             .pending
             .drain()
-            .filter_map(|(serial, p)| matches!(p, Pending::User { .. }).then_some(serial))
+            .filter_map(|(serial, p)| matches!(p, Pending::User).then_some(serial))
             .collect();
         failed.sort_unstable();
         let mut outs: Vec<Out> = failed

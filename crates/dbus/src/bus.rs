@@ -100,6 +100,7 @@ impl DBus {
             .expect("dbus: a bus this DBus owns")
     }
 
+    #[cfg(feature = "fake")]
     pub(crate) fn has_pending_output(&self) -> bool {
         self.conns.iter().any(|c| c.has_pending_output())
     }
