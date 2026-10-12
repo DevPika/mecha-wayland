@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! D-Bus on the ring. The crate docs are written in Task 14.
 
+mod address;
+mod auth;
 mod fd;
 mod message;
 mod names;
