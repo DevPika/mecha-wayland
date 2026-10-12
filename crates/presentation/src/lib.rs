@@ -185,6 +185,36 @@ impl Surfaces {
         self.entries.get(&window).map(|e| e.surface)
     }
 
+    /// Re-send `set_size` on `window`'s `zwlr_layer_surface_v1`, requesting a
+    /// new width/height. `0` defers to the compositor on that axis (e.g. a
+    /// width of `0` with left+right anchored stretches full-width). The
+    /// compositor answers with a `Configure`; `settle` then reports `Resized`
+    /// and the window's layout updates to the new size. No-op for a toplevel
+    /// or an unknown window.
+    ///
+    /// This is the dynamic-resize path that [`on_spawned`](#) only opens at
+    /// surface creation: call it whenever the window's desired size changes
+    /// after the surface exists (e.g. a keyboard that collapses to a toggle
+    /// bar when no text input is focused).
+    pub fn request_layer_size(
+        &mut self,
+        window: NodeId,
+        width: u32,
+        height: u32,
+        wl: &mut Wayland,
+    ) {
+        let Some(entry) = self.entries.get(&window) else {
+            return;
+        };
+        let Shell::Layer(ls) = &entry.shell else {
+            return;
+        };
+        let ls = *ls;
+        let surface = entry.surface;
+        ls.set_size(wl, width, height);
+        surface.commit(wl);
+    }
+
     pub fn is_configured(&self, window: NodeId) -> bool {
         self.entries.get(&window).is_some_and(|e| e.configured)
     }
