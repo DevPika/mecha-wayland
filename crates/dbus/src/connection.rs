@@ -13,9 +13,11 @@ use ring::{Completed, IoEvent, Ring, Token};
 
 use crate::bus::BusId;
 use crate::client::{CallError, CallId, MethodCall};
+use crate::matching::{Entry, MatchId, MatchRule, Matches, Owner};
 use crate::message::{Flags, Message, MessageKind};
-use crate::names::BusName;
-use crate::signals::{MethodReply, Out, out};
+use crate::names::{BusName, InterfaceName, MemberName};
+use crate::signals::{MatchFailed, MethodReply, NameAcquired, NameLost, Out, SignalReceived, out};
+use crate::types::Body;
 
 pub(crate) const DAEMON: &str = "org.freedesktop.DBus";
 pub(crate) const DAEMON_PATH: &str = "/org/freedesktop/DBus";
@@ -34,6 +36,11 @@ pub(crate) enum Pending {
 
 pub(crate) enum Internal {
     Hello,
+    /// `AddMatch` for the rule with this string.
+    AddMatch(String),
+    /// `AddMatch` for an owner-following rule; failures are ignored.
+    OwnerMatch,
+    GetNameOwner(BusName),
 }
 
 pub(crate) struct Connection {
@@ -57,6 +64,7 @@ pub(crate) struct Connection {
     timers: Vec<(Token, Instant)>,
     /// Calls that failed before being sent; answered at `BeforeWait`.
     deferred: Vec<(u32, CallError)>,
+    pub(crate) matches: Matches,
 }
 
 impl Connection {
@@ -77,6 +85,7 @@ impl Connection {
             deadlines: BinaryHeap::new(),
             timers: Vec::new(),
             deferred: Vec::new(),
+            matches: Matches::default(),
         }
     }
 
@@ -326,7 +335,19 @@ impl Connection {
                     None => Vec::new(),
                 }
             }
-            _ => Vec::new(),
+            MessageKind::Signal => {
+                let mut outs = self.daemon_signal(&msg);
+                let matches = self.matches.matching(&msg, self.id);
+                if !matches.is_empty() {
+                    outs.push(out(SignalReceived {
+                        bus: self.id,
+                        matches,
+                        msg,
+                    }));
+                }
+                outs
+            }
+            MessageKind::MethodCall => Vec::new(),
         }
     }
 
@@ -342,6 +363,180 @@ impl Connection {
                 // Refused, or no name: install would wait forever.
                 self.die()
             }
+            Internal::AddMatch(key) => {
+                if msg.kind() != MessageKind::Error {
+                    return Vec::new();
+                }
+                let error = CallError::Remote {
+                    name: msg
+                        .error_name()
+                        .cloned()
+                        .expect("dbus: parse requires an error name"),
+                    message: msg.error_text().unwrap_or_default(),
+                };
+                let bus = self.id;
+                self.matches
+                    .rules
+                    .get(&key)
+                    .map(|e| {
+                        e.ids
+                            .iter()
+                            .map(|&n| {
+                                out(MatchFailed {
+                                    id: MatchId { bus, n },
+                                    error: error.clone(),
+                                })
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            }
+            Internal::OwnerMatch => Vec::new(),
+            Internal::GetNameOwner(name) => {
+                let unique = msg.body::<(BusName,)>().ok().map(|(u,)| u);
+                if let Some(owner) = self.matches.owners.get_mut(&name) {
+                    owner.unique = unique;
+                }
+                Vec::new()
+            }
+        }
+    }
+
+    /// A call to the daemon whose answer the connection handles itself.
+    fn daemon_call<B: Body>(&mut self, member: &'static str, body: &B, why: Internal) {
+        let msg = Message::method_call(DAEMON_PATH, member)
+            .with_destination(DAEMON)
+            .with_interface(DAEMON)
+            .with_body(body);
+        let serial = self.queue(&msg);
+        self.pending.insert(serial, Pending::Internal(why));
+    }
+
+    fn daemon_call_no_reply<B: Body>(&mut self, member: &'static str, body: &B) {
+        let msg = Message::method_call(DAEMON_PATH, member)
+            .with_destination(DAEMON)
+            .with_interface(DAEMON)
+            .with_flags(Flags::NO_REPLY_EXPECTED)
+            .with_body(body);
+        self.queue(&msg);
+    }
+
+    pub(crate) fn add_match(&mut self, rule: MatchRule) -> MatchId {
+        let n = self.matches.next;
+        self.matches.next += 1;
+        let key = rule.to_rule_string();
+        self.matches.ids.insert(n, key.clone());
+        let fresh = !self.matches.rules.contains_key(&key);
+        let sender = rule.sender_name().cloned();
+        self.matches
+            .rules
+            .entry(key.clone())
+            .or_insert(Entry {
+                rule,
+                ids: Vec::new(),
+            })
+            .ids
+            .push(n);
+        if fresh {
+            self.daemon_call(
+                "AddMatch",
+                &(key.as_str(),),
+                Internal::AddMatch(key.clone()),
+            );
+            if let Some(s) = sender.filter(|s| !s.is_unique() && s.as_str() != DAEMON) {
+                self.track_owner(s);
+            }
+        }
+        MatchId { bus: self.id, n }
+    }
+
+    pub(crate) fn remove_match(&mut self, id: MatchId) {
+        let Some(key) = self.matches.ids.remove(&id.n) else {
+            return;
+        };
+        let entry = self
+            .matches
+            .rules
+            .get_mut(&key)
+            .expect("dbus: an id's rule exists");
+        entry.ids.retain(|&x| x != id.n);
+        if !entry.ids.is_empty() {
+            return;
+        }
+        let entry = self.matches.rules.remove(&key).unwrap();
+        self.daemon_call_no_reply("RemoveMatch", &(key.as_str(),));
+        if let Some(s) = entry
+            .rule
+            .sender_name()
+            .filter(|s| !s.is_unique() && s.as_str() != DAEMON)
+        {
+            self.untrack_owner(s.clone());
+        }
+    }
+
+    /// Follow `name`'s owner: a `NameOwnerChanged` rule first, then
+    /// `GetNameOwner`, so the daemon answers both before anything sent
+    /// after them and no later signal can beat the owner.
+    fn track_owner(&mut self, name: BusName) {
+        let owner = self.matches.owners.entry(name.clone()).or_insert(Owner {
+            refs: 0,
+            unique: None,
+        });
+        owner.refs += 1;
+        let first = owner.refs == 1;
+        if first {
+            let rule = owner_rule(&name);
+            self.daemon_call("AddMatch", &(rule.as_str(),), Internal::OwnerMatch);
+            self.daemon_call(
+                "GetNameOwner",
+                &(name.as_str(),),
+                Internal::GetNameOwner(name.clone()),
+            );
+        }
+    }
+
+    fn untrack_owner(&mut self, name: BusName) {
+        let Some(owner) = self.matches.owners.get_mut(&name) else {
+            return;
+        };
+        owner.refs -= 1;
+        if owner.refs == 0 {
+            self.matches.owners.remove(&name);
+            let rule = owner_rule(&name);
+            self.daemon_call_no_reply("RemoveMatch", &(rule.as_str(),));
+        }
+    }
+
+    /// The daemon's own signals: owner changes for followed names, and
+    /// names this connection gained or lost.
+    fn daemon_signal(&mut self, msg: &Message) -> Vec<Out> {
+        if msg.sender().map(BusName::as_str) != Some(DAEMON)
+            || msg.interface().map(InterfaceName::as_str) != Some(DAEMON)
+        {
+            return Vec::new();
+        }
+        let bus = self.id;
+        match msg.member().map(MemberName::as_str) {
+            Some("NameOwnerChanged") => {
+                if let Ok((name, _, new)) = msg.body::<(String, String, String)>() {
+                    let followed = BusName::new(&name)
+                        .ok()
+                        .and_then(|n| self.matches.owners.get_mut(&n));
+                    if let Some(owner) = followed {
+                        owner.unique = BusName::new(&new).ok();
+                    }
+                }
+                Vec::new()
+            }
+            Some("NameAcquired") => msg
+                .body::<(BusName,)>()
+                .map(|(name,)| vec![out(NameAcquired { bus, name })])
+                .unwrap_or_default(),
+            Some("NameLost") => msg
+                .body::<(BusName,)>()
+                .map(|(name,)| vec![out(NameLost { bus, name })])
+                .unwrap_or_default(),
+            _ => Vec::new(),
         }
     }
 
@@ -364,6 +559,16 @@ impl Connection {
         self.outbox.clear();
         Vec::new()
     }
+}
+
+/// The rule that follows `name`'s owner.
+fn owner_rule(name: &BusName) -> String {
+    MatchRule::signal()
+        .sender(DAEMON)
+        .interface(DAEMON)
+        .member("NameOwnerChanged")
+        .arg(0, name.as_str())
+        .to_rule_string()
 }
 
 #[cfg(test)]

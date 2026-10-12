@@ -1,6 +1,7 @@
 //! The `DBus` resource, the `Bus` view over one connection, the module
 //! that installs them, and the two systems that drive the I/O.
 
+use std::ops::BitOr;
 use std::os::unix::net::UnixStream;
 
 use app::prelude::*;
@@ -9,9 +10,11 @@ use ring::prelude::*;
 use crate::address;
 use crate::auth;
 use crate::client::{CallId, MethodCall, ObjectRef};
-use crate::connection::{Connection, READ_CAPACITY};
-use crate::names::{BusName, ObjectPath};
+use crate::connection::{Connection, DAEMON, DAEMON_PATH, READ_CAPACITY};
+use crate::matching::{MatchId, MatchRule};
+use crate::names::{BusName, InterfaceName, ObjectPath};
 use crate::signals::{Out, emit};
+use crate::types::Body;
 
 /// Which bus. `Custom` is any other address: a private bus, a test's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -19,6 +22,23 @@ pub enum BusId {
     System,
     Session,
     Custom(u8),
+}
+
+/// `RequestName`'s flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct NameFlags(pub u32);
+
+impl NameFlags {
+    pub const ALLOW_REPLACEMENT: NameFlags = NameFlags(1);
+    pub const REPLACE_EXISTING: NameFlags = NameFlags(2);
+    pub const DO_NOT_QUEUE: NameFlags = NameFlags(4);
+}
+
+impl BitOr for NameFlags {
+    type Output = NameFlags;
+    fn bitor(self, rhs: NameFlags) -> NameFlags {
+        NameFlags(self.0 | rhs.0)
+    }
 }
 
 /// Every connection, one per bus requested from [`DBusModule`].
@@ -131,6 +151,62 @@ impl<'a> Bus<'a> {
         if call.bus == self.conn.id {
             self.conn.cancel(call.serial);
         }
+    }
+
+    /// Ask the daemon to route matching signals here; each arrives as a
+    /// `SignalReceived` listing the id returned.
+    pub fn add_match(&mut self, rule: MatchRule) -> MatchId {
+        self.conn.add_match(rule)
+    }
+
+    pub fn remove_match(&mut self, id: MatchId) {
+        if id.bus == self.conn.id {
+            self.conn.remove_match(id);
+        }
+    }
+
+    /// `PropertiesChanged` for one interface of one object.
+    pub fn watch_properties(
+        &mut self,
+        destination: impl Into<BusName>,
+        path: impl Into<ObjectPath>,
+        interface: impl Into<InterfaceName>,
+    ) -> MatchId {
+        self.add_match(MatchRule::properties_changed(destination, path, interface))
+    }
+
+    fn daemon<B: Body>(&mut self, member: &'static str, body: &B) -> CallId {
+        self.conn
+            .call(MethodCall::new(DAEMON, DAEMON_PATH, DAEMON, member).body(body))
+    }
+
+    /// The reply's body is `(u32,)`, the daemon's result code; ownership
+    /// arrives as `NameAcquired`.
+    pub fn request_name(&mut self, name: impl Into<BusName>, flags: NameFlags) -> CallId {
+        let name = name.into();
+        self.daemon("RequestName", &(name.as_str(), flags.0))
+    }
+
+    pub fn release_name(&mut self, name: impl Into<BusName>) -> CallId {
+        let name = name.into();
+        self.daemon("ReleaseName", &(name.as_str(),))
+    }
+
+    /// The reply's body is `(String,)`, the unique owner.
+    pub fn get_name_owner(&mut self, name: impl Into<BusName>) -> CallId {
+        let name = name.into();
+        self.daemon("GetNameOwner", &(name.as_str(),))
+    }
+
+    /// The reply's body is `(bool,)`.
+    pub fn name_has_owner(&mut self, name: impl Into<BusName>) -> CallId {
+        let name = name.into();
+        self.daemon("NameHasOwner", &(name.as_str(),))
+    }
+
+    /// The reply's body is `(Vec<String>,)`.
+    pub fn list_names(&mut self) -> CallId {
+        self.daemon("ListNames", &())
     }
 }
 
