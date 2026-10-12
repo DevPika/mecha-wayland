@@ -3,14 +3,21 @@
 
 mod address;
 mod auth;
+mod bus;
+mod connection;
 mod fd;
 mod message;
 mod names;
+mod signals;
 mod signature;
 mod types;
 mod value;
 mod wire;
 
+#[cfg(feature = "fake")]
+pub mod fake;
+
+pub use bus::{Bus, BusId, DBus, DBusModule};
 pub use fd::UnixFd;
 pub use message::{Flags, MAX_MESSAGE, Message, MessageKind};
 pub use names::{BusName, ErrorName, InterfaceName, MemberName, NameError, ObjectPath};
