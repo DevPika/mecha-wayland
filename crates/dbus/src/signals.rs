@@ -89,3 +89,12 @@ pub struct PropertySetRequested {
     pub call: IncomingCall,
 }
 impl Signal for PropertySetRequested {}
+
+/// The bus went away. Raised once; every pending call on it has failed
+/// with `CallError::Disconnected`, and later calls fail the same way.
+/// There is no reconnection.
+#[derive(Debug, Clone)]
+pub struct BusDisconnected {
+    pub bus: BusId,
+}
+impl Signal for BusDisconnected {}

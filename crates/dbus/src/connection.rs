@@ -21,7 +21,7 @@ use crate::server::{
     PropertyError, STANDARD, Server, errors,
 };
 use crate::signals::{
-    MatchFailed, MethodCallReceived, MethodReply, NameAcquired, NameLost, Out,
+    BusDisconnected, MatchFailed, MethodCallReceived, MethodReply, NameAcquired, NameLost, Out,
     PropertySetRequested, SignalReceived, out,
 };
 use crate::standard;
@@ -609,8 +609,12 @@ impl Connection {
             }
             self.inbox.extend_from_slice(&done.buf);
             self.in_fds.extend(done.fds);
-            self.arm_read(ring, done.buf);
-            self.read_messages()
+            let outs = self.read_messages();
+            // A connection that died while framing stops reading.
+            if !self.dead {
+                self.arm_read(ring, done.buf);
+            }
+            outs
         } else if self.sending == Some(e.token) {
             self.sending = None;
             if e.result < 0 {
@@ -902,15 +906,39 @@ impl Connection {
             .insert(serial, Pending::Internal(Internal::Hello));
     }
 
-    /// Mark the connection dead. Task 12 makes this fail pending calls
-    /// and raise `BusDisconnected`.
+    /// The bus is gone: fail every pending call, drop matches and
+    /// exports, raise `BusDisconnected` once. The socket stays open until
+    /// the connection drops, since an op in flight may still use it.
     pub(crate) fn die(&mut self) -> Vec<Out> {
         if self.dead {
             return Vec::new();
         }
         self.dead = true;
         self.outbox.clear();
-        Vec::new()
+        self.inbox.clear();
+        self.in_fds.clear();
+        let bus = self.id;
+        let mut failed: Vec<u32> = self
+            .pending
+            .drain()
+            .filter_map(|(serial, p)| matches!(p, Pending::User { .. }).then_some(serial))
+            .collect();
+        failed.sort_unstable();
+        let mut outs: Vec<Out> = failed
+            .into_iter()
+            .map(|serial| {
+                out(MethodReply {
+                    call: CallId { bus, serial },
+                    result: Err(CallError::Disconnected),
+                })
+            })
+            .collect();
+        self.deadlines.clear();
+        self.matches = Matches::default();
+        self.server.exports.clear();
+        self.server.unanswered.borrow_mut().clear();
+        outs.push(out(BusDisconnected { bus }));
+        outs
     }
 }
 
