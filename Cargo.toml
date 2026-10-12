@@ -26,6 +26,7 @@ mechanix-widgets.workspace = true
 [workspace]
 members = [
     "crates/app",
+    "crates/dbus",
     "crates/atlas",
     "crates/geometry",
     "crates/gles",
@@ -46,6 +47,7 @@ resolver = "3"
 
 [workspace.dependencies]
 app = { path = "crates/app" }
+dbus = { path = "crates/dbus" }
 atlas = { path = "crates/atlas" }
 geometry = { path = "crates/geometry" }
 gles = { path = "crates/gles" }

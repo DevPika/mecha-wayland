@@ -1,0 +1,16 @@
+[package]
+name = "dbus"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+app.workspace = true
+ring.workspace = true
+smallvec.workspace = true
+
+[features]
+## A scripted bus daemon over a socketpair, for tests.
+fake = []
+
+[dev-dependencies]
+dbus = { path = ".", features = ["fake"] }
