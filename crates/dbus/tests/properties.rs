@@ -265,3 +265,28 @@ fn set_property_value_checks_its_arguments() {
         Err(PropertyError::UnknownExport)
     );
 }
+
+#[test]
+fn malformed_standard_arguments_are_invalid_args() {
+    let (mut f, _) = fake();
+    for (member, sig) in [("Get", "ss"), ("GetAll", "s"), ("Set", "ssv")] {
+        let serial = f.send(
+            Message::method_call(PATH, member)
+                .with_destination(UNIQUE)
+                .with_sender(":1.9")
+                .with_interface(PROPS)
+                .with_raw_body(Signature::from(sig), Vec::new()),
+        );
+        f.turn();
+        let answer = f
+            .received()
+            .into_iter()
+            .find(|m| m.reply_serial() == Some(serial))
+            .expect("an answer");
+        assert_eq!(
+            error_name(&answer),
+            "org.freedesktop.DBus.Error.InvalidArgs",
+            "{member}"
+        );
+    }
+}

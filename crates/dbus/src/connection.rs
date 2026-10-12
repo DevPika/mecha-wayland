@@ -333,14 +333,20 @@ impl Connection {
                 Err(e) => self.answer_error(&call, errors::FAILED, &e.to_string()),
             },
             "Get" => {
-                let (i, name): (String, String) = call.args().expect("dbus: checked as ss");
+                let Ok((i, name)) = call.args::<(String, String)>() else {
+                    self.answer_error(&call, errors::INVALID_ARGS, "malformed arguments");
+                    return Vec::new();
+                };
                 match self.property(&path, &i, &name) {
                     Ok((_, _, value)) => self.answer(&call, &(value,)),
                     Err((err, text)) => self.answer_error(&call, err, &text),
                 }
             }
             "GetAll" => {
-                let (i,): (String,) = call.args().expect("dbus: checked as s");
+                let Ok((i,)) = call.args::<(String,)>() else {
+                    self.answer_error(&call, errors::INVALID_ARGS, "malformed arguments");
+                    return Vec::new();
+                };
                 match self.server.export_at(&path, &i) {
                     Some((_, e)) => {
                         let all: BTreeMap<String, Value> = e.values.clone();
@@ -383,7 +389,10 @@ impl Connection {
     }
 
     fn property_set(&mut self, call: IncomingCall, path: &ObjectPath) -> Vec<Out> {
-        let (i, name, value): (String, String, Value) = call.args().expect("dbus: checked as ssv");
+        let Ok((i, name, value)) = call.args::<(String, String, Value)>() else {
+            self.answer_error(&call, errors::INVALID_ARGS, "malformed arguments");
+            return Vec::new();
+        };
         match self.property(path, &i, &name) {
             Err((err, text)) => {
                 self.answer_error(&call, err, &text);
