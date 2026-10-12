@@ -12,7 +12,9 @@ use crate::auth;
 use crate::client::{CallId, MethodCall, ObjectRef};
 use crate::connection::{Connection, DAEMON, DAEMON_PATH, READ_CAPACITY};
 use crate::matching::{MatchId, MatchRule};
-use crate::names::{BusName, InterfaceName, ObjectPath};
+use crate::message::Message;
+use crate::names::{BusName, ErrorName, InterfaceName, MemberName, ObjectPath};
+use crate::server::{ExportError, ExportId, IncomingCall, InterfaceSpec};
 use crate::signals::{Out, emit};
 use crate::types::Body;
 
@@ -70,6 +72,20 @@ impl DBus {
             .iter_mut()
             .find(|c| c.id == id)
             .map(|conn| Bus { conn })
+    }
+
+    /// Answer `call` with `body`. A second answer is ignored.
+    pub fn reply<B: Body>(&mut self, call: &IncomingCall, body: &B) {
+        if let Some(bus) = self.bus(call.bus()) {
+            bus.conn.answer(call, body);
+        }
+    }
+
+    /// Answer `call` with an error. A second answer is ignored.
+    pub fn reply_error(&mut self, call: &IncomingCall, name: impl Into<ErrorName>, text: &str) {
+        if let Some(bus) = self.bus(call.bus()) {
+            bus.conn.answer_error(call, name, text);
+        }
     }
 
     pub(crate) fn conn_for(&self, t: Token) -> Option<BusId> {
@@ -138,6 +154,46 @@ impl<'a> Bus<'a> {
     }
 
     /// Send `call`; its answer is a `MethodReply` with the returned id.
+    /// Serve `spec` at `path`. Calls arrive as `MethodCallReceived`.
+    pub fn export(
+        &mut self,
+        path: impl Into<ObjectPath>,
+        spec: InterfaceSpec,
+    ) -> Result<ExportId, ExportError> {
+        self.conn.export(path.into(), spec)
+    }
+
+    pub fn unexport(&mut self, id: ExportId) {
+        self.conn.unexport(id);
+    }
+
+    /// Broadcast a signal.
+    pub fn emit_signal<B: Body>(
+        &mut self,
+        path: impl Into<ObjectPath>,
+        interface: impl Into<InterfaceName>,
+        member: impl Into<MemberName>,
+        body: &B,
+    ) {
+        let m = Message::signal(path, interface, member).with_body(body);
+        self.conn.queue(&m);
+    }
+
+    /// Send a signal to one destination.
+    pub fn emit_signal_to<B: Body>(
+        &mut self,
+        destination: impl Into<BusName>,
+        path: impl Into<ObjectPath>,
+        interface: impl Into<InterfaceName>,
+        member: impl Into<MemberName>,
+        body: &B,
+    ) {
+        let m = Message::signal(path, interface, member)
+            .with_destination(destination)
+            .with_body(body);
+        self.conn.queue(&m);
+    }
+
     pub fn send(&mut self, call: MethodCall) -> CallId {
         self.conn.call(call)
     }

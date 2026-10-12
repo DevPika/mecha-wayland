@@ -9,6 +9,7 @@ use crate::client::{CallError, CallId};
 use crate::matching::MatchId;
 use crate::message::Message;
 use crate::names::BusName;
+use crate::server::{ExportId, IncomingCall};
 
 /// One signal to raise. Connection code builds these while it holds the
 /// `DBus` resource; [`emit`] raises them once it is released.
@@ -67,3 +68,11 @@ pub struct MatchFailed {
     pub error: CallError,
 }
 impl Signal for MatchFailed {}
+
+/// A call to an exported object, already checked against its spec.
+#[derive(Debug, Clone)]
+pub struct MethodCallReceived {
+    pub export: ExportId,
+    pub call: IncomingCall,
+}
+impl Signal for MethodCallReceived {}

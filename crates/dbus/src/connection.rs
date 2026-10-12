@@ -15,8 +15,13 @@ use crate::bus::BusId;
 use crate::client::{CallError, CallId, MethodCall};
 use crate::matching::{Entry, MatchId, MatchRule, Matches, Owner};
 use crate::message::{Flags, Message, MessageKind};
-use crate::names::{BusName, InterfaceName, MemberName};
-use crate::signals::{MatchFailed, MethodReply, NameAcquired, NameLost, Out, SignalReceived, out};
+use crate::names::{BusName, ErrorName, InterfaceName, MemberName, ObjectPath};
+use crate::server::{
+    Export, ExportError, ExportId, IncomingCall, InterfaceSpec, STANDARD, Server, errors,
+};
+use crate::signals::{
+    MatchFailed, MethodCallReceived, MethodReply, NameAcquired, NameLost, Out, SignalReceived, out,
+};
 use crate::types::Body;
 
 pub(crate) const DAEMON: &str = "org.freedesktop.DBus";
@@ -65,6 +70,13 @@ pub(crate) struct Connection {
     /// Calls that failed before being sent; answered at `BeforeWait`.
     deferred: Vec<(u32, CallError)>,
     pub(crate) matches: Matches,
+    pub(crate) server: Server,
+}
+
+/// Where an incoming call goes.
+enum Route {
+    Export(u64),
+    Error(&'static str, String),
 }
 
 impl Connection {
@@ -86,6 +98,7 @@ impl Connection {
             timers: Vec::new(),
             deferred: Vec::new(),
             matches: Matches::default(),
+            server: Server::default(),
         }
     }
 
@@ -147,6 +160,16 @@ impl Connection {
     }
 
     pub(crate) fn before_wait(&mut self, ring: &mut Ring) -> Vec<Out> {
+        let dropped: Vec<_> = self.server.unanswered.borrow_mut().drain(..).collect();
+        for (sender, serial) in dropped {
+            let m = Message::error(
+                serial,
+                errors::NO_REPLY,
+                "The call was dropped without a reply",
+            )
+            .with_destination_opt(sender);
+            self.queue(&m);
+        }
         let bus = self.id;
         let outs = self
             .deferred
@@ -161,6 +184,118 @@ impl Connection {
         self.flush(ring);
         self.arm_timer(ring);
         outs
+    }
+
+    pub(crate) fn export(
+        &mut self,
+        path: ObjectPath,
+        spec: InterfaceSpec,
+    ) -> Result<ExportId, ExportError> {
+        if STANDARD.contains(&spec.name.as_str()) {
+            return Err(ExportError::Reserved);
+        }
+        if self.server.export_at(&path, spec.name.as_str()).is_some() {
+            return Err(ExportError::AlreadyExported);
+        }
+        let n = self.server.next;
+        self.server.next += 1;
+        self.server.exports.insert(n, Export::new(path, spec));
+        Ok(ExportId { bus: self.id, n })
+    }
+
+    pub(crate) fn unexport(&mut self, id: ExportId) {
+        if id.bus == self.id {
+            self.server.exports.remove(&id.n);
+        }
+    }
+
+    /// Answer `call` with a return, unless it was answered already or
+    /// asked for no reply.
+    pub(crate) fn answer<B: Body>(&mut self, call: &IncomingCall, body: &B) {
+        if !call.take_answer() || call.no_reply() {
+            return;
+        }
+        let m = Message::method_return(call.message().serial())
+            .with_destination_opt(call.sender().cloned())
+            .with_body(body);
+        self.queue(&m);
+    }
+
+    pub(crate) fn answer_error(
+        &mut self,
+        call: &IncomingCall,
+        name: impl Into<ErrorName>,
+        text: &str,
+    ) {
+        if !call.take_answer() || call.no_reply() {
+            return;
+        }
+        let m = Message::error(call.message().serial(), name, text)
+            .with_destination_opt(call.sender().cloned());
+        self.queue(&m);
+    }
+
+    fn incoming(&mut self, msg: Message) -> Vec<Out> {
+        let call = IncomingCall::new(self.id, msg, &self.server.unanswered);
+        match self.route(&call) {
+            Route::Export(n) => vec![out(MethodCallReceived {
+                export: ExportId { bus: self.id, n },
+                call,
+            })],
+            Route::Error(name, text) => {
+                self.answer_error(&call, name, &text);
+                Vec::new()
+            }
+        }
+    }
+
+    /// The export a call is for, or the error that answers it.
+    fn route(&self, call: &IncomingCall) -> Route {
+        let msg = call.message();
+        let path = msg.path().expect("dbus: parse requires a call's path");
+        let member = msg.member().expect("dbus: parse requires a call's member");
+        let here: Vec<(u64, &Export)> = self.server.at_path(path).collect();
+        let candidates: Vec<(u64, &Export)> = match msg.interface() {
+            Some(iface) => {
+                if here.is_empty() {
+                    return Route::Error(errors::UNKNOWN_OBJECT, format!("No object at {path}"));
+                }
+                match here.iter().find(|(_, e)| e.spec.name == *iface) {
+                    Some(&c) => vec![c],
+                    None => {
+                        return Route::Error(
+                            errors::UNKNOWN_INTERFACE,
+                            format!("No interface {iface} at {path}"),
+                        );
+                    }
+                }
+            }
+            None => here
+                .iter()
+                .copied()
+                .filter(|(_, e)| e.spec.methods.iter().any(|m| m.name == *member))
+                .collect(),
+        };
+        match candidates.as_slice() {
+            [(n, e)] => match e.spec.methods.iter().find(|m| m.name == *member) {
+                None => Route::Error(
+                    errors::UNKNOWN_METHOD,
+                    format!("No method {member} on {}", e.spec.name),
+                ),
+                Some(m) if m.input != *msg.signature() => Route::Error(
+                    errors::INVALID_ARGS,
+                    format!("{member} takes ({}), not ({})", m.input, msg.signature()),
+                ),
+                Some(_) => Route::Export(*n),
+            },
+            [] if here.is_empty() => {
+                Route::Error(errors::UNKNOWN_OBJECT, format!("No object at {path}"))
+            }
+            _ => Route::Error(
+                errors::UNKNOWN_METHOD,
+                format!("No single method {member} at {path}"),
+            ),
+        }
     }
 
     pub(crate) fn call(&mut self, call: MethodCall) -> CallId {
@@ -347,7 +482,7 @@ impl Connection {
                 }
                 outs
             }
-            MessageKind::MethodCall => Vec::new(),
+            MessageKind::MethodCall => self.incoming(msg),
         }
     }
 
