@@ -58,7 +58,6 @@
 //! assert!(app.component::<ComputedLayout>(label).unwrap().rect.width() > 0.0);
 //! assert!(app.component::<ComputedLayout>(glyph).unwrap().rect.width() > 0.0);
 //! ```
->>>>>>> a03cde3 (fix(animation): Make Layout follow the same logic as Paint)
 
 mod button;
 mod div;
