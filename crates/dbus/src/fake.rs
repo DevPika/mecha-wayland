@@ -15,7 +15,7 @@
 //!   200 KiB): the fake only reads between the app's turns.
 
 use std::collections::{HashMap, VecDeque};
-use std::io::{ErrorKind, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
@@ -250,6 +250,12 @@ impl FakeBus {
     /// The SASL text the app sent.
     pub fn auth(&self) -> &str {
         &self.auth
+    }
+
+    /// Whether the app closed its end: a nonblocking read finds EOF.
+    pub fn peer_closed(&mut self) -> bool {
+        let mut buf = [0u8; 1];
+        matches!((&self.peer).read(&mut buf), Ok(0))
     }
 
     /// Close the fake's end: the app's next read returns zero.

@@ -7,7 +7,7 @@ use std::cmp::Reverse;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, VecDeque};
 use std::os::fd::{AsFd, OwnedFd};
 use std::os::unix::net::UnixStream;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ring::{Completed, IoEvent, Ring, Token};
 
@@ -71,6 +71,9 @@ pub(crate) struct Connection {
     deadlines: BinaryHeap<Reverse<(Instant, u32)>>,
     /// Ring timeouts in flight, and the deadline each was armed for.
     timers: Vec<(Token, Instant)>,
+    /// A zero-length timeout in flight so the ring wakes after a
+    /// `BeforeWait` that raised signals whose handlers may have sent.
+    wake: Option<Token>,
     /// Calls that failed before being sent; answered at `BeforeWait`.
     deferred: Vec<(u32, CallError)>,
     pub(crate) matches: Matches,
@@ -103,6 +106,7 @@ impl Connection {
             pending: HashMap::new(),
             deadlines: BinaryHeap::new(),
             timers: Vec::new(),
+            wake: None,
             deferred: Vec::new(),
             matches: Matches::default(),
             server: Server::default(),
@@ -164,6 +168,7 @@ impl Connection {
     pub(crate) fn owns(&self, t: Token) -> bool {
         self.reading == Some(t)
             || self.sending == Some(t)
+            || self.wake == Some(t)
             || self.timers.iter().any(|&(tt, _)| tt == t)
     }
 
@@ -203,7 +208,7 @@ impl Connection {
             self.queue(&m);
         }
         let bus = self.id;
-        let outs = self
+        let outs: Vec<Out> = self
             .deferred
             .drain(..)
             .map(|(serial, e)| {
@@ -215,6 +220,11 @@ impl Connection {
             .collect();
         self.flush(ring);
         self.arm_timer(ring);
+        // The handlers of `outs` run after this returns; anything they
+        // send waits in the outbox, so wake the ring to flush it.
+        if !outs.is_empty() && self.wake.is_none() {
+            self.wake = Some(ring.timeout(Duration::ZERO));
+        }
         outs
     }
 
@@ -529,9 +539,11 @@ impl Connection {
         } else if self.dead {
             self.deferred.push((serial, CallError::Disconnected));
         } else {
-            let deadline = Instant::now() + call.timeout;
             self.pending.insert(serial, Pending::User);
-            self.deadlines.push(Reverse((deadline, serial)));
+            // A timeout too large to represent never expires.
+            if let Some(deadline) = Instant::now().checked_add(call.timeout) {
+                self.deadlines.push(Reverse((deadline, serial)));
+            }
         }
         CallId {
             bus: self.id,
@@ -599,6 +611,10 @@ impl Connection {
     }
 
     pub(crate) fn on_io(&mut self, e: &IoEvent, done: Completed, ring: &mut Ring) -> Vec<Out> {
+        if self.wake == Some(e.token) {
+            self.wake = None;
+            return Vec::new();
+        }
         if let Some(i) = self.timers.iter().position(|&(t, _)| t == e.token) {
             self.timers.swap_remove(i);
             return self.expire();
@@ -621,6 +637,9 @@ impl Connection {
             outs
         } else if self.sending == Some(e.token) {
             self.sending = None;
+            if self.dead {
+                return Vec::new();
+            }
             if e.result < 0 {
                 return self.die();
             }
@@ -644,6 +663,8 @@ impl Connection {
         loop {
             match Message::frame_len(&self.inbox[at..]) {
                 Ok(None) => break,
+                // The specification says to ignore unknown message types.
+                Ok(Some(n)) if !matches!(self.inbox[at + 1], 1..=4) => at += n,
                 Ok(Some(n)) => match Message::parse(&self.inbox[at..at + n], &mut self.in_fds) {
                     Ok(msg) => {
                         at += n;
@@ -918,6 +939,9 @@ impl Connection {
             return Vec::new();
         }
         self.dead = true;
+        // Close the socket so the daemon drops us; the fd stays valid
+        // for operations still in flight.
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
         self.outbox.clear();
         self.inbox.clear();
         self.in_fds.clear();
@@ -1046,5 +1070,42 @@ mod tests {
         c.handle(Message::method_return(1).with_body(&(1u32,)));
         assert!(c.dead);
         assert!(c.unique_name.is_none());
+    }
+
+    #[test]
+    fn an_unknown_message_type_is_skipped() {
+        let (mut c, _peer) = conn();
+        let mut bytes = Message::signal("/a", "a.b", "C")
+            .with_sender(":1.9")
+            .encode(5)
+            .0;
+        bytes[1] = 9;
+        c.inbox.extend_from_slice(&bytes);
+        let outs = c.read_messages();
+        assert!(outs.is_empty());
+        assert!(!c.dead);
+        assert!(c.inbox.is_empty());
+    }
+
+    #[test]
+    fn a_send_completing_after_death_queues_no_tail() {
+        let (mut c, _peer) = conn();
+        let mut ring = Ring::new(4);
+        c.die();
+        let t = Token::from_raw(7);
+        c.sending = Some(t);
+        c.on_io(
+            &IoEvent {
+                token: t,
+                result: 1,
+            },
+            Completed {
+                buf: b"abc".to_vec(),
+                fds: Vec::new(),
+            },
+            &mut ring,
+        );
+        assert!(c.outbox.is_empty());
+        assert!(c.sending.is_none());
     }
 }

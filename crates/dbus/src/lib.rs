@@ -14,6 +14,10 @@
 //! - [`DBusModule`] installs after `RingModule`. At install it connects,
 //!   authenticates (blocking, `EXTERNAL`), says `Hello` and turns the
 //!   ring until every bus has its unique name.
+//! - Ordinary sending belongs in `Tick` systems and in handlers. A
+//!   `BeforeWait` system ordered after [`DBusModule`] sends on the next
+//!   wake of the ring: D-Bus has already flushed by then, and it only
+//!   arranges a wake when it raised signals itself.
 //! - Nothing is a callback or a future. Every result is a signal:
 //!   [`MethodReply`] for a [`CallId`], [`SignalReceived`] for the
 //!   [`MatchId`]s a signal satisfies, [`MethodCallReceived`] and
@@ -72,8 +76,9 @@
 //!         return;
 //!     }
 //!     if let Ok(msg) = &e.result {
-//!         let (state,): (Value,) = msg.body().unwrap();
-//!         println!("NetworkManager state: {state:?}");
+//!         if let Ok((state,)) = msg.body::<(Value,)>() {
+//!             println!("NetworkManager state: {state:?}");
+//!         }
 //!     }
 //! }
 //!

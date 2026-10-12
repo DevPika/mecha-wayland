@@ -74,6 +74,8 @@ impl MethodCall {
         self
     }
 
+    /// Fail the call with [`CallError::Timeout`] after `after`. A timeout
+    /// too large to represent (such as `Duration::MAX`) never expires.
     pub fn timeout(mut self, after: Duration) -> Self {
         self.timeout = after;
         self

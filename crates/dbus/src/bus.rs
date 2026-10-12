@@ -155,7 +155,6 @@ impl<'a> Bus<'a> {
         }
     }
 
-    /// Send `call`; its answer is a `MethodReply` with the returned id.
     /// Serve `spec` at `path`. Calls arrive as `MethodCallReceived`.
     pub fn export(
         &mut self,
@@ -208,6 +207,7 @@ impl<'a> Bus<'a> {
         self.conn.queue(&m);
     }
 
+    /// Send `call`; its answer is a `MethodReply` with the returned id.
     pub fn send(&mut self, call: MethodCall) -> CallId {
         self.conn.call(call)
     }

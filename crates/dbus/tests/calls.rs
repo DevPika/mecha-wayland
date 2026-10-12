@@ -267,3 +267,45 @@ fn an_fd_in_a_reply_arrives_usable() {
     reader.read_to_string(&mut s).unwrap();
     assert_eq!(s, "hi");
 }
+
+fn resend_on_fds_unsupported(app: &mut App, e: &MethodReply) {
+    if matches!(e.result, Err(CallError::FdsUnsupported)) {
+        app.resource_mut::<DBus>()
+            .session()
+            .send(MethodCall::new(NM, NM_PATH, NM, "Second"));
+    }
+}
+
+#[test]
+fn a_send_from_a_before_wait_handler_wakes_the_ring() {
+    let mut f = with_log(FakeBus::without_fds());
+    f.app.system(resend_on_fds_unsupported);
+    f.turn();
+    let (r, _w) = std::io::pipe().unwrap();
+    f.app
+        .resource_mut::<DBus>()
+        .session()
+        .send(MethodCall::new(NM, NM_PATH, NM, "TakeFd").body(&(UnixFd::new(r.into()),)));
+    // This turn raises BeforeWait itself; the handler's send lands after
+    // D-Bus flushed, and only the wake completes the turn.
+    Ring::turn(&mut f.app);
+    f.turn();
+    f.expect_call("Second");
+}
+
+#[test]
+fn a_huge_timeout_never_expires() {
+    let mut f = fake();
+    let id = f
+        .app
+        .resource_mut::<DBus>()
+        .session()
+        .send(MethodCall::new(NM, NM_PATH, NM, "GetDevices").timeout(Duration::MAX));
+    f.turn();
+    let call = f.expect_call("GetDevices");
+    f.reply(&call, &());
+    f.turn();
+    let r = replies(&mut f);
+    assert_eq!(r[0].call, id);
+    assert!(r[0].result.is_ok());
+}

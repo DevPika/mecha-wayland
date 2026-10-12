@@ -168,20 +168,41 @@ impl Value {
             Value::Signature(s) => e.signature(s.as_str()),
             Value::Fd(f) => e.fd(f),
             Value::Array { elem, items } => {
+                for i in items {
+                    assert_eq!(
+                        i.signature().as_str(),
+                        elem.as_str(),
+                        "dbus: an array item does not have the array's element signature"
+                    );
+                }
                 e.array(signature::alignment(elem.as_str().as_bytes()[0]), |e| {
                     for i in items {
                         i.encode_raw(e);
                     }
                 })
             }
-            Value::Dict { entries, .. } => e.array(8, |e| {
+            Value::Dict { key, val, entries } => {
                 for (k, v) in entries {
-                    e.structure(|e| {
-                        k.encode_raw(e);
-                        v.encode_raw(e);
-                    });
+                    assert_eq!(
+                        k.signature().as_str(),
+                        key.as_str(),
+                        "dbus: a dict key does not have the dict's key signature"
+                    );
+                    assert_eq!(
+                        v.signature().as_str(),
+                        val.as_str(),
+                        "dbus: a dict value does not have the dict's value signature"
+                    );
                 }
-            }),
+                e.array(8, |e| {
+                    for (k, v) in entries {
+                        e.structure(|e| {
+                            k.encode_raw(e);
+                            v.encode_raw(e);
+                        });
+                    }
+                })
+            }
             Value::Struct(fields) => e.structure(|e| {
                 for f in fields {
                     f.encode_raw(e);
@@ -337,6 +358,38 @@ mod tests {
             v.get::<BTreeMap<String, (u8, Vec<ObjectPath>)>>().unwrap(),
             typed
         );
+    }
+
+    #[test]
+    #[should_panic(expected = "dbus: an array item")]
+    fn an_array_item_of_the_wrong_type_panics() {
+        let v = Value::Array {
+            elem: Signature::from_valid("u".to_owned()),
+            items: vec![Value::Str("x".into())],
+        };
+        v.encode_raw(&mut Encoder::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "dbus: a dict key")]
+    fn a_dict_key_of_the_wrong_type_panics() {
+        let v = Value::Dict {
+            key: Signature::from_valid("s".to_owned()),
+            val: Signature::from_valid("u".to_owned()),
+            entries: vec![(Value::U32(1), Value::U32(2))],
+        };
+        v.encode_raw(&mut Encoder::new());
+    }
+
+    #[test]
+    #[should_panic(expected = "dbus: a dict value")]
+    fn a_dict_value_of_the_wrong_type_panics() {
+        let v = Value::Dict {
+            key: Signature::from_valid("s".to_owned()),
+            val: Signature::from_valid("u".to_owned()),
+            entries: vec![(Value::Str("k".into()), Value::Str("v".into()))],
+        };
+        v.encode_raw(&mut Encoder::new());
     }
 
     #[test]

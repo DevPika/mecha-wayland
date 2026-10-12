@@ -113,6 +113,7 @@ fn a_malformed_message_drops_the_connection() {
     f.write_raw(&[b'X'; 16]);
     Ring::turn(&mut f.app);
     assert_eq!(f.app.resource::<Log>().gone, 1);
+    assert!(f.peer_closed(), "the socket is shut down on death");
 }
 
 #[test]
