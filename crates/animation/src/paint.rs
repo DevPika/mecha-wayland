@@ -114,17 +114,15 @@ pub(crate) fn on_paint_changed(app: &mut App, changed: &Emitted<OnChanged<Paint>
             Paint::Quad(quad) => Some(*quad),
             _ => None,
         };
-        if let (Some(from), Paint::Quad(to), Some(configuration)) =
-            (from, &target, configuration)
-        {
+        if let (Some(from), Paint::Quad(to), Some(configuration)) = (from, &target, configuration) {
             let mut transition = app.component_mut::<PaintTransition>(id).unwrap();
             if transition.0.as_ref().is_some_and(|t| t.target == *to) {
                 // An equal target keeps its original timing and starting point.
             } else if from != *to {
                 transition.0 = Some(Running::new(from, *to, now, configuration));
             } else {
-					 // TODO: This branch should never execute because transition.0
-					 // should be None anyways
+                // TODO: This branch should never execute because transition.0
+                // should be None anyways
                 transition.0 = None;
             }
             if transition.is_running() {
@@ -134,8 +132,8 @@ pub(crate) fn on_paint_changed(app: &mut App, changed: &Emitted<OnChanged<Paint>
                 }
             }
         } else {
-				// TODO: FOR NOW ONLY we copy Paint to AnimatedPaint if the target
-				// isn't a quad
+            // TODO: FOR NOW ONLY we copy Paint to AnimatedPaint if the target
+            // isn't a quad
             let copied = app
                 .component_mut::<AnimatedPaint>(id)
                 .unwrap()
@@ -150,12 +148,12 @@ pub(crate) fn on_paint_changed(app: &mut App, changed: &Emitted<OnChanged<Paint>
         }
     }
 
-	 // take care of bookeeping
-	 // this would generate OnChanged<PaintTransition> otherwise, which is
-	 // rather useless
+    // take care of bookeeping
+    // this would generate OnChanged<PaintTransition> otherwise, which is
+    // rather useless
     app.take_changed::<PaintTransition>().for_each(drop);
 
-	 // Request frames to start the animation
+    // Request frames to start the animation
     for window in windows {
         app.signal(RequestFrame(window));
     }

@@ -87,8 +87,8 @@ use tree::{LayoutTree, taffy_id};
 pub mod prelude {
     pub use crate::{
         Align, Available, ComputedLayout, Constraints, Direction, Display, Justify, LayoutDone,
-        LayoutModule, LayoutRoot, LayoutStyle, Measure, Position,
-        StyleContext, Val, Wrap, auto, percent, px,
+        LayoutModule, LayoutRoot, LayoutStyle, Measure, Position, StyleContext, Val, Wrap, auto,
+        percent, px,
     };
 }
 
@@ -355,12 +355,8 @@ fn pass(app: &mut App, _: &PostTick) {
 /// and sized by its own style. `round_layout` writes every target.
 fn layout_root(app: &mut App, root: NodeId) {
     let (tree, mut data) = app.split();
-    let (styles, measures, layouts, scratch) = data.query::<(
-        &LayoutStyle,
-        &Measure,
-        &mut ComputedLayout,
-        &mut Scratch,
-    )>();
+    let (styles, measures, layouts, scratch) =
+        data.query::<(&LayoutStyle, &Measure, &mut ComputedLayout, &mut Scratch)>();
     let mut view = LayoutTree::new(tree, root, styles, measures, layouts, scratch);
     let id = taffy_id(root);
     compute_root_layout(&mut view, id, TSize::MAX_CONTENT);
