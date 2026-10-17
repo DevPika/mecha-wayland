@@ -6,6 +6,7 @@ pub use dbus;
 pub use mechanix_widgets;
 
 pub mod prelude {
+    pub use animation::prelude::*;
     pub use app::prelude::*;
     pub use atlas::prelude::*;
     pub use dbus::prelude::*;

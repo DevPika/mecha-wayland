@@ -2,6 +2,7 @@
 //! a bordered box, and a word in Inter, drawn by the GLES backend. Run
 //! under a Wayland session: `cargo run -p presentation --example showcase`.
 
+use animation::AnimationModule;
 use app::prelude::*;
 use atlas::prelude::*;
 use geometry::{Color, Point, Size};
@@ -130,6 +131,7 @@ fn main() {
         .add_module(PaintModule)
         .add_module(WindowModule)
         .add_module(InteractivityModule)
+        .add_module(AnimationModule)
         .add_module(RenderModule::default())
         .insert_resource(Atlas::new());
     app.add_module(RingModule::default())

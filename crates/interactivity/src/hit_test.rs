@@ -1,24 +1,24 @@
-//! The hit test: every node under a window whose `Layout` contains a
+//! The hit test: every node under a window whose `ComputedLayout` contains a
 //! position, in dispatch order.
 
 use app::{App, NodeId};
 use geometry::Point;
-use layout::Layout;
+use layout::ComputedLayout;
 
 use crate::contacts::HitSet;
 
-/// Every node under `window` (`window` included) whose `Layout.rect`
+/// Every node under `window` (`window` included) whose `ComputedLayout.rect`
 /// contains `position`. A preorder walk collects the matches ancestor
 /// first, then the list is reversed: deepest/frontmost first, `window`
 /// last. That lines up with `render`'s rule that a later preorder index
 /// paints nearer, without this crate ever reading `render`'s `Scene`.
 ///
-/// A node whose `Layout` was never written by `LayoutModule` is
+/// A node whose `ComputedLayout` was never written by `LayoutModule` is
 /// `Rect::default()`, which is zero-sized and so never matches; no
 /// separate filter is needed for it.
 pub(crate) fn hit_test(app: &App, window: NodeId, position: Point) -> HitSet {
     let contains = |id: NodeId| {
-        app.component::<Layout>(id)
+        app.component::<ComputedLayout>(id)
             .is_some_and(|l| l.rect.contains(position))
     };
     let mut matches = HitSet::new();

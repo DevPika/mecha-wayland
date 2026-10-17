@@ -16,6 +16,7 @@ window.workspace = true
 xkbcommon.workspace = true
 
 [dev-dependencies]
+animation.workspace = true
 paint.workspace = true
 ring.workspace = true
 wayland = { workspace = true, features = ["fake"] }

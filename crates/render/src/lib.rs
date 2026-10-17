@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! The render module: a window's `Layout` and `Paint` joined into a
+//! The render module: a window's `Layout` and `AnimatedPaint` joined into a
 //! command queue a GPU backend executes without a decision.
 //!
 //! # Model
@@ -22,14 +22,15 @@
 //!   known, so a later sibling inside the solid composites onto the
 //!   parent's colour and its depth write covers the earlier one where
 //!   their rects overlap.
-//! - `Layout` and `Paint` changes, and removals, mark the nodes and raise
-//!   `RequestFrame` for their window; nothing else does, and nothing runs
-//!   on `Tick`. The walk damages a marked node's old and new bounds, a
+//! - `Layout` and `AnimatedPaint` changes, and removals, mark the nodes and raise
+//!   `RequestFrame` for their window; animation can request frames too. Nothing
+//!   runs on `Tick`. The walk damages a marked node's old and new bounds, a
 //!   removed node's last bounds, and the whole window on the first frame
 //!   or a new size or scale. A write that lands between the drain and a
-//!   `Frame` is drawn by that frame and, when it moved or resized the
-//!   node, damaged by it too; only a same-bounds change, a colour, is
-//!   damaged one frame late.
+//!   `Frame` is drawn by that frame. Layout changes are damaged then even
+//!   if the emitted bounds stay the same; their late change notifications
+//!   still mark them dirty and request another frame. Same-bounds paint changes,
+//!   such as a colour, are still damaged one frame late.
 //! - [`Scenes`] keeps the last few frames' damage per window, as many as
 //!   [`RenderModule::buffers`] says. A backend asks [`Scenes::queue`] for
 //!   the buffer it will draw into by its age and gets a [`Queue`]: the
@@ -39,12 +40,13 @@
 //!   `paint`; uploading atlas pixels is the backend's business against the
 //!   atlas, not this module's.
 //!
-//! Installs after `LayoutModule`, `PaintModule` and `WindowModule`; a
-//! backend installs after this.
+//! Installs after `LayoutModule`, `PaintModule`, `WindowModule` and
+//! `AnimationModule`; a backend installs after this.
 //!
 //! # Quick start
 //!
 //! ```
+//! use animation::AnimationModule;
 //! use app::prelude::*;
 //! use geometry::{Color, Rect};
 //! use layout::prelude::*;
@@ -67,6 +69,7 @@
 //! app.add_module(LayoutModule)
 //!     .add_module(PaintModule)
 //!     .add_module(WindowModule)
+//!     .add_module(AnimationModule)
 //!     .add_module(RenderModule::default())
 //!     .system(answer);
 //!
@@ -95,10 +98,10 @@
 //! assert_eq!(quad.kind(), Command::QUAD);
 //! ```
 
+use animation::{AnimatedPaint, Layout};
 use app::prelude::*;
 use geometry::{Color, Corners, Insets, Rect, Size};
-use layout::Layout;
-use paint::{AtlasId, AtlasTile, Paint};
+use paint::{AtlasId, AtlasTile};
 use window::{Frame, InWindow, RequestFrame, Window};
 
 mod rect;
@@ -238,15 +241,16 @@ pub struct Queue {
 // Private state
 // ---------------------------------------------------------------------------
 
-/// Previous output per node, not a copy of any input: the bounds of what
-/// the node emitted at the last frame it was walked, `None` if nothing,
-/// and whether a `Layout` or `Paint` change was noted since. Written by
-/// the change systems and the walk; its `OnChanged` drain has no
+/// The bounds and layout from the last frame this node was walked (`None`
+/// for bounds if nothing was emitted), and whether a `Layout` or `AnimatedPaint`
+/// change was noted since. Written by the change systems and the walk;
+/// its `OnChanged` drain has no
 /// listener, and `on_frame` takes the record after the walk so the drain
 /// sees only what the change systems marked between frames.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub(crate) struct Drawn {
     pub(crate) rect: Option<Rect>,
+    pub(crate) layout: Option<Layout>,
     pub(crate) dirty: bool,
 }
 
@@ -317,8 +321,9 @@ impl Scenes {
 // ---------------------------------------------------------------------------
 
 /// Registers `Drawn`, inserts `Scenes`, and attaches the systems.
-/// Installs after `LayoutModule`, `PaintModule` and `WindowModule`; a
-/// backend installs after this, so on one `Frame` the scene is rebuilt
+/// Installs after `LayoutModule`, `PaintModule`, `WindowModule` and
+/// `AnimationModule`; a backend installs after this, so on one `Frame` the
+/// scene is rebuilt
 /// before the backend asks for its queue.
 pub struct RenderModule {
     /// How many buffers a backend holds per window. That many frames of
@@ -353,8 +358,8 @@ fn on_layout_changed(app: &mut App, e: &Emitted<OnChanged<Layout>>) {
     note(app, &e.targets);
 }
 
-/// A `Paint` change: note the node and ask for its window.
-fn on_paint_changed(app: &mut App, e: &Emitted<OnChanged<Paint>>) {
+/// An `AnimatedPaint` change: note the node and ask for its window.
+fn on_paint_changed(app: &mut App, e: &Emitted<OnChanged<AnimatedPaint>>) {
     note(app, &e.targets);
 }
 
@@ -398,7 +403,7 @@ fn on_removed(app: &mut App, r: &Removed) {
     }
 }
 
-/// Rebuild the window's scene from the live `Layout` and `Paint`. A stale
+/// Rebuild the window's scene from the live `Layout` and `AnimatedPaint`. A stale
 /// id or a non-window is ignored. Nothing here raises `RequestFrame`.
 fn on_frame(app: &mut App, f: &Frame) {
     let w = f.0;
@@ -413,7 +418,7 @@ fn on_frame(app: &mut App, f: &Frame) {
 
     let (tree, mut data) = app.split();
     let (layouts, paints, mut drawn, mut scenes) =
-        data.query::<(&Layout, &Paint, &mut Drawn, ResMut<Scenes>)>();
+        data.query::<(&Layout, &AnimatedPaint, &mut Drawn, ResMut<Scenes>)>();
     let scene = scenes.scene_or_new(w);
     let full = scene.begin(size, scale, clear);
     let visited = walk::walk(tree, &layouts, &paints, &mut drawn, w, scale, clear, scene);

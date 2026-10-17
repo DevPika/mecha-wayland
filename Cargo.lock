@@ -15,6 +15,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
+name = "animation"
+version = "0.1.0"
+dependencies = [
+ "app",
+ "geometry",
+ "layout",
+ "paint",
+ "window",
+]
+
+[[package]]
 name = "app"
 version = "0.1.0"
 dependencies = [
@@ -376,6 +387,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 name = "mecha-wayland"
 version = "0.1.0"
 dependencies = [
+ "animation",
  "app",
  "atlas",
  "dbus",
@@ -510,6 +522,7 @@ dependencies = [
 name = "presentation"
 version = "0.1.0"
 dependencies = [
+ "animation",
  "app",
  "atlas",
  "geometry",
@@ -566,6 +579,7 @@ dependencies = [
 name = "render"
 version = "0.1.0"
 dependencies = [
+ "animation",
  "app",
  "geometry",
  "layout",
