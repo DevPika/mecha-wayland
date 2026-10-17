@@ -223,8 +223,7 @@ fn sync_visuals(ctx: &mut Context<'_, Text>) {
             me.native,
         )
     };
-    let (font, px, color) =
-        resolve_text_visuals(variant, emphasised, color_src, weight, size, ctx);
+    let (font, px, color) = resolve_text_visuals(variant, emphasised, color_src, weight, size, ctx);
 
     if let Some(mut c) = ctx.at(native) {
         c.set_font(font);

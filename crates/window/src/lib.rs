@@ -7,7 +7,7 @@
 //!
 //! - A window is a node built from [`window()`], a child of the app root
 //!   and a layout root: its `LayoutStyle` is the box it asks for and its
-//!   `Layout` is laid out from the origin in its own coordinates. The
+//!   `ComputedLayout` is laid out from the origin in its own coordinates. The
 //!   default style is a column sized to its content.
 //! - [`InWindow`] is on every node: the window it belongs to, a window's
 //!   being itself, `None` outside every window. Written once, at spawn.
@@ -52,7 +52,7 @@
 //! );
 //! app.tick();
 //! assert_eq!(
-//!     app.component::<Layout>(win).unwrap().rect,
+//!     app.component::<ComputedLayout>(win).unwrap().rect,
 //!     Rect::new(0.0, 0.0, 320.0, 200.0)
 //! );
 //! assert_eq!(app.resource::<Windows>().len(), 1);

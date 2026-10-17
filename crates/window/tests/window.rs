@@ -145,7 +145,7 @@ fn a_spawned_window_is_a_root_with_the_builders_style_and_is_laid_out() {
         Some(&InWindow(Some(win.id())))
     );
     assert_eq!(
-        app.component::<Layout>(win).unwrap().rect,
+        app.component::<ComputedLayout>(win).unwrap().rect,
         Rect::new(0.0, 0.0, 480.0, 240.0)
     );
     assert_eq!(take_done(), vec![vec![win.id()]]);
@@ -165,7 +165,7 @@ fn the_default_style_is_a_column_sized_to_content() {
     assert_eq!(style.direction, Direction::Column);
     assert_eq!((style.width, style.height), (auto(), auto()));
     assert_eq!(
-        app.component::<Layout>(win).unwrap().rect,
+        app.component::<ComputedLayout>(win).unwrap().rect,
         Rect::new(0.0, 0.0, 48.0, 42.0),
         "as wide as the widest child, as tall as both stacked"
     );
@@ -404,7 +404,7 @@ fn resized_rewrites_the_style_only_when_the_size_differs() {
     let style = app.component::<LayoutStyle>(win).unwrap();
     assert_eq!((style.width, style.height), (px(640.0), px(360.0)));
     assert_eq!(
-        app.component::<Layout>(win).unwrap().rect,
+        app.component::<ComputedLayout>(win).unwrap().rect,
         Rect::new(0.0, 0.0, 640.0, 360.0)
     );
     assert_eq!(take_done(), vec![vec![win.id()]], "relaid out that tick");

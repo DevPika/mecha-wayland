@@ -1,11 +1,11 @@
-//! The walk: one window's subtree in preorder, `Layout` and `Paint` read
+//! The walk: one window's subtree in preorder, `Layout` and `AnimatedPaint` read
 //! into commands in device pixels, the solid behind each node carried
 //! down, and the damage of dirty nodes collected. Nothing here is a
 //! system; `on_frame` calls [`walk`] once per `Frame`.
 
+use animation::{AnimatedPaint, Layout};
 use app::{Comps, CompsMut, NodeId, Tree};
 use geometry::{Color, Corners, Insets, Rect};
-use layout::Layout;
 use paint::{MonochromeSprite, Paint, PolychromeSprite, Quad};
 
 use crate::{Command, Drawn, NO_TILE, rect, scene::Scene};
@@ -91,14 +91,14 @@ pub(crate) fn hand_down(
 
 /// Preorder over `window`'s subtree. Every visited node takes a z; a
 /// visible paint in a non-empty box emits its commands into `scene`; a
-/// dirty node, or a clean one whose bounds changed since last frame, adds
-/// its old and its new bounds to `scene.damage`, one rect when they
-/// coincide; every node that drew is recorded in `scene.drawing`. Returns
-/// how many nodes were visited.
+/// dirty node, or a clean one whose bounds or layout changed since last
+/// frame, adds its old and its new bounds to `scene.damage`, one rect when
+/// they coincide; every node that drew is recorded in `scene.drawing`.
+/// Returns how many nodes were visited.
 pub(crate) fn walk(
     tree: Tree<'_>,
     layouts: &Comps<'_, Layout>,
-    paints: &Comps<'_, Paint>,
+    paints: &Comps<'_, AnimatedPaint>,
     drawn: &mut CompsMut<'_, Drawn>,
     window: NodeId,
     scale: f32,
@@ -118,9 +118,10 @@ pub(crate) fn walk(
     while let Some((id, solid)) = stack.pop() {
         let z = 2.0 * visited as f32;
         visited += 1;
-        let (Some(layout), Some(paint)) = (layouts.get(id), paints.get(id)) else {
+        let (Some(layout), Some(animated)) = (layouts.get(id), paints.get(id)) else {
             continue;
         };
+        let paint = &animated.0;
         let r = scale_rect(layout.rect, scale);
         let mut bounds: Option<Rect> = None;
         let mut child_solid = solid;
@@ -145,10 +146,9 @@ pub(crate) fn walk(
             }
         }
         if let Some(mut d) = drawn.get_mut(id) {
-            // Marked, or moved without a mark: a write that landed after
-            // the last drain is drawn here, so its old pixels are repaired
-            // here too or nothing ever would.
-            if d.dirty || d.rect != bounds {
+            // Layout may be written at frame time, after the last drain,
+            // and affect pixels even when the emitted bounds stay equal.
+            if d.dirty || d.rect != bounds || d.layout != Some(*layout) {
                 if let Some(old) = d.rect {
                     scene.damage.push(old);
                 }
@@ -162,6 +162,7 @@ pub(crate) fn walk(
             }
             d.set_if_neq(Drawn {
                 rect: bounds,
+                layout: Some(*layout),
                 dirty: false,
             });
         }

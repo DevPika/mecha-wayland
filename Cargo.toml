@@ -6,6 +6,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+animation.workspace = true
 app.workspace = true
 dbus.workspace = true
 atlas = { workspace = true, features = ["svg"] }
@@ -28,6 +29,7 @@ mechanix-widgets.workspace = true
 members = [
     "crates/app",
     "crates/dbus",
+    "crates/animation",
     "crates/atlas",
     "crates/geometry",
     "crates/gles",
@@ -47,6 +49,7 @@ members = [
 resolver = "3"
 
 [workspace.dependencies]
+animation = { path = "crates/animation" }
 app = { path = "crates/app" }
 dbus = { path = "crates/dbus" }
 atlas = { path = "crates/atlas" }

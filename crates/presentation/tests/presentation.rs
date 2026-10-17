@@ -4,6 +4,7 @@
 
 use std::sync::{Mutex, MutexGuard};
 
+use animation::AnimationModule;
 use app::prelude::*;
 use atlas::Atlas;
 use geometry::Color;
@@ -199,6 +200,7 @@ fn fake() -> Option<(MutexGuard<'static, ()>, Fake)> {
         .add_module(PaintModule)
         .add_module(WindowModule)
         .add_module(InteractivityModule)
+        .add_module(AnimationModule)
         .add_module(RenderModule::default())
         .insert_resource(Atlas::new());
     f.app
@@ -652,6 +654,34 @@ fn frames_are_throttled_by_the_callback() {
     f.send(CALLBACK + 1, ev::DONE, |w| w.uint(0));
     f.turn();
     assert!(attaches(&mut f).is_empty(), "nothing wanted");
+}
+
+#[test]
+fn changing_window_direction_keeps_the_configured_size_and_draws() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 640, 480);
+    f.requests();
+    f.send(CALLBACK, ev::DONE, |w| w.uint(1));
+    f.turn();
+    f.requests();
+
+    let mut style = f.app.component::<LayoutStyle>(win).unwrap().clone();
+    style.direction = Direction::Row;
+    *f.app.component_mut::<LayoutStyle>(win).unwrap() = style;
+    repaint(&mut f, win);
+    f.turn();
+    assert_eq!(
+        f.app.component::<LayoutStyle>(win).unwrap().width,
+        px(640.0)
+    );
+    assert_eq!(
+        f.app.component::<LayoutStyle>(win).unwrap().height,
+        px(480.0)
+    );
+    assert!(
+        !attaches(&mut f).is_empty(),
+        "changing only direction must still attach a frame"
+    );
 }
 
 #[test]

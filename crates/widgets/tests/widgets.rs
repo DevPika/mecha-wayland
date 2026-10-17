@@ -1,5 +1,5 @@
 //! The four primitive widgets end to end: spawned, ticked, their
-//! `Context` setters exercised, `OnChanged<Paint>`/`OnChanged<Layout>`
+//! `Context` setters exercised, `OnChanged<Paint>`/`OnChanged<ComputedLayout>`
 //! observed.
 
 use std::cell::RefCell;
@@ -16,14 +16,14 @@ use widgets::prelude::*;
 thread_local! {
     /// Every `Emitted<OnChanged<Paint>>` seen: its targets.
     static PAINTED: RefCell<Vec<Vec<NodeId>>> = const { RefCell::new(Vec::new()) };
-    /// Every `Emitted<OnChanged<Layout>>` seen: its targets.
+    /// Every `Emitted<OnChanged<ComputedLayout>>` seen: its targets.
     static MOVED: RefCell<Vec<Vec<NodeId>>> = const { RefCell::new(Vec::new()) };
 }
 
 fn log_painted(_: &mut App, e: &Emitted<OnChanged<Paint>>) {
     PAINTED.with(|l| l.borrow_mut().push(e.targets.to_vec()));
 }
-fn log_moved(_: &mut App, e: &Emitted<OnChanged<Layout>>) {
+fn log_moved(_: &mut App, e: &Emitted<OnChanged<ComputedLayout>>) {
     MOVED.with(|l| l.borrow_mut().push(e.targets.to_vec()));
 }
 fn take_painted() -> Vec<Vec<NodeId>> {
@@ -86,7 +86,7 @@ fn root(app: &mut App, width: f32, height: f32) -> NodeId {
 }
 
 fn rect(app: &App, id: NodeId) -> Rect {
-    app.component::<Layout>(id).unwrap().rect
+    app.component::<ComputedLayout>(id).unwrap().rect
 }
 
 // ── Div ─────────────────────────────────────────────────────────────────

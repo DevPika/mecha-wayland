@@ -102,6 +102,8 @@ pub enum Direction {
     #[default]
     Row,
     Column,
+    ColumnReverse,
+    RowReverse,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -258,8 +260,16 @@ impl LayoutStyle {
         self.direction = Direction::Row;
         self
     }
+    pub fn row_reverse(mut self) -> Self {
+        self.direction = Direction::RowReverse;
+        self
+    }
     pub fn column(mut self) -> Self {
         self.direction = Direction::Column;
+        self
+    }
+    pub fn column_reverse(mut self) -> Self {
+        self.direction = Direction::ColumnReverse;
         self
     }
 
@@ -434,7 +444,9 @@ impl FlexboxContainerStyle for LayoutStyle {
     fn flex_direction(&self) -> FlexDirection {
         match self.direction {
             Direction::Row => FlexDirection::Row,
+            Direction::RowReverse => FlexDirection::RowReverse,
             Direction::Column => FlexDirection::Column,
+            Direction::ColumnReverse => FlexDirection::ColumnReverse,
         }
     }
     fn flex_wrap(&self) -> FlexWrap {

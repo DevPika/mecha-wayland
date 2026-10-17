@@ -28,7 +28,7 @@ use atlas::{Atlas, FontId};
 use bitflags::bitflags;
 use geometry::Color;
 use interactivity::{KeyMeaning, KeyPress, KeyRepeat, Press};
-use layout::{Layout, LayoutStyle, StyleContext, px};
+use layout::{ComputedLayout, LayoutStyle, StyleContext, px};
 use paint::{Paint, PaintContext, Quad};
 
 use crate::{Div, Text, TextContext, div, text};
@@ -544,7 +544,7 @@ impl Widget for Input {
             };
             let origin = ctx
                 .at(content)
-                .and_then(|c| c.component::<Layout>().map(|l| l.rect.x()))
+                .and_then(|c| c.component::<ComputedLayout>().map(|l| l.rect.x()))
                 .unwrap_or(0.0);
             let x = e.position.x - origin;
             // Hit-test against what the user sees: the masked string when

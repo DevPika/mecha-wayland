@@ -40,6 +40,7 @@
 //! # Quick start
 //!
 //! ```no_run
+//! use animation::AnimationModule;
 //! use app::prelude::*;
 //! use atlas::Atlas;
 //! use gles::Budget;
@@ -67,6 +68,7 @@
 //!     .add_module(LayoutModule)
 //!     .add_module(PaintModule)
 //!     .add_module(WindowModule)
+//!     .add_module(AnimationModule)
 //!     .add_module(RenderModule::default());
 //! f.app.insert_resource(Atlas::new());
 //! f.app.add_module(PresentationModule { app_id: "example".into(), budget: Budget::default() });
@@ -473,7 +475,7 @@ fn replace_slots(
 /// the frame that fits.
 fn settle(app: &mut App, w: NodeId, proposed: (i32, i32)) {
     let layout = app
-        .component::<Layout>(w)
+        .component::<ComputedLayout>(w)
         .map(|l| l.rect.size)
         .unwrap_or(Size::ZERO);
     let pick = |p: i32, l: f32, d: f32| {
@@ -672,7 +674,10 @@ fn on_frame(app: &mut App, f: &Frame) {
     );
     if want != (slots.width, slots.height) {
         // A frame between a configure and the layout that follows it:
-        // the layout's change requests the frame that fits.
+        // the layout's change requests the frame that fits. A widget must
+        // preserve the compositor-configured window size when editing other
+        // style fields: an arbitrary size change has no matching configure
+        // to update the slots and can leave the window without a callback.
         entry.wanting = true;
         return;
     }
