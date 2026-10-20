@@ -272,6 +272,153 @@ fn emit_reaches_only_the_named_nodes_in_order() {
 }
 
 #[test]
+fn emit_all_is_queued_and_visits_the_root_then_descendants_in_tree_order() {
+    let mut app = App::new();
+    let root = app.root();
+    let a = app.spawn(root, CounterBuilder);
+    let b = app.spawn(root, CounterBuilder);
+    let c = app.spawn(a, CounterBuilder);
+    let d = app.spawn(a, CounterBuilder);
+    // Slot order is a, b, c, d; tree order is a, c, d, b.
+    for (target, tag) in [
+        (root, "root"),
+        (a.id(), "a"),
+        (b.id(), "b"),
+        (c.id(), "c"),
+        (d.id(), "d"),
+    ] {
+        app.spawn(root, WatcherBuilder { target, tag });
+    }
+    app.spawn(root, Leaf); // Nodes without handlers are harmless.
+
+    app.emit_all(Inc);
+    assert!(take_log().is_empty(), "nothing runs before flush");
+    assert_eq!(count(&app, a), 0);
+    app.flush();
+
+    assert_eq!(
+        take_log(),
+        [
+            "root target_is_me=false",
+            "a target_is_me=false",
+            "c target_is_me=false",
+            "d target_is_me=false",
+            "b target_is_me=false",
+        ]
+    );
+    for handle in [a, b, c, d] {
+        assert_eq!(count(&app, handle), 1, "each node receives the event once");
+    }
+}
+
+#[test]
+fn emit_all_snapshots_targets_and_reports_them_even_if_removed_before_flush() {
+    #[derive(Default)]
+    struct Emissions(Vec<(u32, Vec<NodeId>)>);
+    impl Resource for Emissions {}
+
+    fn on_emitted(app: &mut App, e: &Emitted<Add>) {
+        for &id in e.targets.iter() {
+            if let Some(counter) = app.widget::<Counter>(id) {
+                assert_eq!(counter.0, e.event.0, "handlers ran before the signal");
+            }
+        }
+        app.resource_mut::<Emissions>()
+            .0
+            .push((e.event.0, e.targets.to_vec()));
+    }
+
+    let mut app = App::new();
+    app.init_resource::<Emissions>().system(on_emitted);
+    let root = app.root();
+    let kept = app.spawn(root, CounterBuilder);
+    let gone = app.spawn(root, CounterBuilder);
+    let unhandled = app.spawn(root, Leaf);
+
+    app.emit_all(Add(7));
+    app.remove(gone);
+    let replacement = app.spawn(root, CounterBuilder);
+    let late = app.spawn(kept, CounterBuilder);
+    assert!(app.resource::<Emissions>().0.is_empty());
+    app.flush();
+
+    assert_eq!(count(&app, kept), 7);
+    assert_eq!(count(&app, replacement), 0, "a reused slot is not a target");
+    assert_eq!(
+        count(&app, late),
+        0,
+        "nodes spawned after emit_all are not targets"
+    );
+    assert_eq!(
+        app.resource::<Emissions>().0,
+        [(7, vec![root, kept.id(), gone.id(), unhandled.id()]),],
+        "one signal retains the original event and full target snapshot"
+    );
+}
+
+#[test]
+fn emit_all_on_a_root_only_tree_still_emits_once() {
+    fn on_emitted(app: &mut App, e: &Emitted<Add>) {
+        assert_eq!(&*e.targets, &[app.root()]);
+        assert_eq!(e.event.0, 3);
+        log("emitted");
+    }
+
+    let mut app = App::new();
+    app.system(on_emitted);
+    app.emit_all(Add(3));
+    assert!(take_log().is_empty());
+    app.flush();
+    assert_eq!(take_log(), ["emitted"]);
+}
+
+#[test]
+fn emit_all_skips_nodes_removed_by_an_earlier_handler() {
+    struct Reaper;
+    struct ReaperBuilder {
+        root: NodeId,
+        victim: NodeId,
+    }
+    impl Build for ReaperBuilder {
+        type Widget = Reaper;
+    }
+    impl Widget for Reaper {
+        type Builder = ReaperBuilder;
+        fn build(b: ReaperBuilder, _: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            s.on::<Inc>(b.root, move |ctx, _| {
+                ctx.remove(b.victim);
+                ctx.spawn(b.root, CounterBuilder);
+                log("reaped");
+            });
+            Reaper
+        }
+    }
+
+    let mut app = App::new();
+    let gone = app.spawn(app.root(), CounterBuilder);
+    app.spawn(gone, CounterBuilder);
+    let kept = app.spawn(app.root(), CounterBuilder);
+    app.spawn(
+        app.root(),
+        ReaperBuilder {
+            root: app.root(),
+            victim: gone.id(),
+        },
+    );
+    app.emit_all(Inc);
+    app.flush();
+
+    assert!(!app.is_live(gone));
+    assert_eq!(count(&app, kept), 1);
+    assert_eq!(
+        app.widgets::<Counter>().map(|(_, c)| c.0).sum::<u32>(),
+        1,
+        "the replacement spawned during dispatch receives no event"
+    );
+    assert_eq!(take_log(), ["reaped"]);
+}
+
+#[test]
 fn emit_to_the_same_node_twice_runs_its_handlers_twice() {
     let mut app = App::new();
     let a = app.spawn(app.root(), CounterBuilder);

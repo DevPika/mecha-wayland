@@ -528,6 +528,26 @@ impl App {
         }));
     }
 
+    /// Queue `event` for every node, including the root, in tree pre-order:
+    /// a node before its children, children in sibling order.
+    ///
+    /// Targets are collected when this method is called. Nothing runs
+    /// until [`App::flush`]. Nodes spawned afterwards do not receive this
+    /// event; targets removed before their turn in dispatch are skipped,
+    /// even if their slots have been reused. Nodes without a handler for
+    /// `E` are harmless.
+    ///
+    /// Uses one [`App::emit`] for the entire target list. After dispatch,
+    /// queues one [`Emitted<E>`] signal if a system is registered for it,
+    /// carrying the event and the original targets (including any that
+    /// were skipped). A tree with only the root still targets the root.
+    pub fn emit_all<E: Event>(&mut self, event: E) {
+        let targets: Vec<NodeId> = std::iter::once(self.root())
+            .chain(self.descendants(self.root()))
+            .collect();
+        self.emit(event, targets);
+    }
+
     /// Run everything queued: every event, then one signal, then every
     /// event again, until both queues are empty. Work a job queues runs
     /// in the same call. A no-op on empty queues.
