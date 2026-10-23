@@ -170,6 +170,10 @@ struct Entry {
     /// Hidden by [`Surfaces::set_mapped`]: configures are acked and
     /// settled but nothing is drawn.
     hidden: bool,
+    /// A layer window's role and requested size: the compositor resets
+    /// the layer state when the surface is unmapped, so a remap sends it
+    /// again.
+    layer: Option<(LayerRole, (u32, u32))>,
 }
 
 /// Presentation's own state: one entry per window it put on screen, and
@@ -214,7 +218,7 @@ impl Surfaces {
         height: u32,
         wl: &mut Wayland,
     ) {
-        let Some(entry) = self.entries.get(&window) else {
+        let Some(entry) = self.entries.get_mut(&window) else {
             return;
         };
         let Shell::Layer(ls) = &entry.shell else {
@@ -222,6 +226,9 @@ impl Surfaces {
         };
         let ls = *ls;
         let surface = entry.surface;
+        if let Some((_, size)) = entry.layer.as_mut() {
+            *size = (width, height);
+        }
         ls.set_size(wl, width, height);
         surface.commit(wl);
     }
@@ -235,7 +242,9 @@ impl Surfaces {
     /// forgets what it drew. While hidden, configures are acked and
     /// settled but nothing is drawn. Showing it again commits empty so
     /// the compositor sends a fresh initial configure, whose settle draws
-    /// the whole window. A configure that arrives while hidden does not
+    /// the whole window. The unmap also resets the compositor's layer
+    /// state (anchor, zone, keyboard, size), so the show sends it again
+    /// first. A configure that arrives while hidden does not
     /// change this: it was sent before the unmap. A window hidden before
     /// its first buffer is kicked at the end of the tick (`PostTick`).
     /// Hiding a window whose entry does not exist yet (it was spawned this
@@ -274,6 +283,12 @@ impl Surfaces {
             // the unmap arrived while hidden and marked it configured.
             if entry.frames > 0 {
                 entry.configured = false;
+                if let (Shell::Layer(ls), Some((l, size))) = (&entry.shell, &entry.layer) {
+                    ls.set_anchor(wl, l.anchor);
+                    ls.set_exclusive_zone(wl, l.exclusive_zone);
+                    ls.set_keyboard_interactivity(wl, l.keyboard_interactivity);
+                    ls.set_size(wl, size.0, size.1);
+                }
                 entry.surface.commit(wl);
             } else {
                 self.to_kick.push(window);
@@ -472,6 +487,10 @@ fn on_spawned(app: &mut App, s: &Spawned) {
 
     let (mut surfaces, mut wl) = app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
     let surface = compositor.create_surface(&mut wl);
+    let layer = match &role {
+        Role::Layer(l) => Some((l.clone(), requested)),
+        Role::Toplevel => None,
+    };
     let shell = match role {
         Role::Toplevel => {
             let xdg = wm_base.get_xdg_surface(&mut wl, surface);
@@ -513,6 +532,7 @@ fn on_spawned(app: &mut App, s: &Spawned) {
             slots: None,
             frames: 0,
             hidden,
+            layer,
         },
     );
 }

@@ -724,6 +724,16 @@ fn hiding_before_spawn_suppresses_the_first_draw() {
     assert!(!f.app.resource::<Surfaces>().is_mapped(win));
 }
 
+/// What showing a drawn layer window sends: the layer state the unmap
+/// reset, then an empty commit.
+const REMAP_SHAPE: [(u32, u16); 5] = [
+    (XDG, op::LAYER_SET_ANCHOR),
+    (XDG, op::LAYER_SET_ZONE),
+    (XDG, op::LAYER_SET_KEYBOARD),
+    (XDG, op::LAYER_SET_SIZE),
+    (SURFACE, op::COMMIT),
+];
+
 /// A layer window configured and drawn, requests drained.
 fn drawn_layer(f: &mut Fake) -> NodeId {
     let win = spawn_layer(f);
@@ -758,7 +768,7 @@ fn remapping_waits_for_a_new_configure_then_draws() {
     f.requests();
     set_mapped(&mut f, win, true);
     let s = shape(&mut f);
-    assert_eq!(s, vec![(SURFACE, op::COMMIT)]);
+    assert_eq!(s, REMAP_SHAPE);
     assert!(f.app.resource::<Surfaces>().is_mapped(win));
 
     layer_configure(&mut f, 4);
@@ -777,6 +787,69 @@ fn remapping_waits_for_a_new_configure_then_draws() {
 }
 
 #[test]
+fn remapping_resends_the_layer_state_the_unmap_reset() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let root = f.app.root();
+    let role = Role::Layer(LayerRole {
+        layer: Layer::Top,
+        anchor: Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
+        exclusive_zone: 32,
+        namespace: "bar".into(),
+        keyboard_interactivity: KeyboardInteractivity::None,
+    });
+    let win = f
+        .app
+        .spawn_with(
+            root,
+            window().layout(LayoutStyle::default().column().size(auto(), px(32.0))),
+            (role,),
+        )
+        .id();
+    f.app.tick();
+    f.turn();
+    f.requests();
+    layer_configure(&mut f, 3);
+    f.requests();
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.request_layer_size(win, 0, 48, &mut wl);
+    }
+    f.turn();
+    set_mapped(&mut f, win, false);
+    f.requests();
+    set_mapped(&mut f, win, true);
+    let reqs = f.requests();
+    let shape: Vec<(u32, u16)> = reqs.iter().map(|r| (r.sender.0, r.opcode)).collect();
+    assert_eq!(
+        shape,
+        vec![
+            (XDG, op::LAYER_SET_ANCHOR),
+            (XDG, op::LAYER_SET_ZONE),
+            (XDG, op::LAYER_SET_KEYBOARD),
+            (XDG, op::LAYER_SET_SIZE),
+            (SURFACE, op::COMMIT),
+        ],
+        "the unmap reset the layer state, so the remap commit needs it again, with no attach"
+    );
+    assert_eq!(reqs[0].reader().uint(), Some(1 | 4 | 8));
+    assert_eq!(reqs[1].reader().int(), Some(32));
+    let mut r = reqs[3].reader();
+    assert_eq!((r.uint(), r.uint()), (Some(0), Some(48)));
+
+    layer_configure(&mut f, 4);
+    let reqs = f.requests();
+    let ack = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(XDG) && r.opcode == op::LAYER_ACK)
+        .expect("the fresh configure is acked");
+    let attach = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::ATTACH)
+        .expect("and the window draws");
+    assert!(ack < attach);
+}
+
+#[test]
 fn a_configure_in_flight_across_the_unmap_does_not_skip_the_remap_commit() {
     let Some((_gpu, mut f)) = fake() else { return };
     let win = drawn_layer(&mut f);
@@ -788,7 +861,7 @@ fn a_configure_in_flight_across_the_unmap_does_not_skip_the_remap_commit() {
     f.app.tick();
     f.turn();
     let s = shape(&mut f);
-    assert_eq!(s, vec![(SURFACE, op::COMMIT)], "an empty commit, no attach");
+    assert_eq!(s, REMAP_SHAPE, "layer state then an empty commit, no attach");
     assert!(!f.app.resource::<Surfaces>().is_configured(win));
 
     layer_configure(&mut f, 5);
