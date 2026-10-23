@@ -235,9 +235,11 @@ impl Surfaces {
     /// forgets what it drew. While hidden, configures are acked and
     /// settled but nothing is drawn. Showing it again commits empty so
     /// the compositor sends a fresh initial configure, whose settle draws
-    /// the whole window; a window hidden before its first buffer is
-    /// simply kicked. Hiding a window whose entry does not exist yet (it
-    /// was spawned this tick) makes the entry start hidden.
+    /// the whole window. A configure that arrives while hidden does not
+    /// change this: it was sent before the unmap. A window hidden before
+    /// its first buffer is kicked at the end of the tick (`PostTick`).
+    /// Hiding a window whose entry does not exist yet (it was spawned this
+    /// tick) makes the entry start hidden.
     pub fn set_mapped(&mut self, window: NodeId, mapped: bool, wl: &mut Wayland) {
         let Some(entry) = self.entries.get_mut(&window) else {
             if mapped {
@@ -267,7 +269,11 @@ impl Surfaces {
             }
         } else {
             entry.wanting = true;
-            if !entry.configured && entry.frames > 0 {
+            // Every hide of a drawn window attached null, so the window
+            // needs a fresh initial commit even if a configure sent before
+            // the unmap arrived while hidden and marked it configured.
+            if entry.frames > 0 {
+                entry.configured = false;
                 entry.surface.commit(wl);
             } else {
                 self.to_kick.push(window);
@@ -275,11 +281,12 @@ impl Surfaces {
         }
     }
 
-    /// Set which part of a layer window takes input; touches elsewhere
-    /// fall through to what is beneath. `None` restores the default, the
-    /// whole surface. `Some(rects)` is the union of `rects` (logical px,
-    /// rounded outward); `Some(&[])` takes no input at all. Committed
-    /// straight away. No-op for an unknown window.
+    /// Set which part of a window takes input; touches elsewhere fall
+    /// through to what is beneath. Works for any known window, toplevel
+    /// or layer; call it once the window is configured. `None` restores
+    /// the default, the whole surface. `Some(rects)` is the union of
+    /// `rects` (logical px, rounded outward); `Some(&[])` takes no input
+    /// at all. Committed straight away. No-op for an unknown window.
     pub fn set_input_region(&mut self, window: NodeId, region: Option<&[Rect]>, wl: &mut Wayland) {
         let Some(entry) = self.entries.get(&window) else {
             return;
@@ -300,6 +307,7 @@ impl Surfaces {
         surface.commit(wl);
     }
 
+    /// Whether `window` has an entry and is not hidden by [`Surfaces::set_mapped`].
     pub fn is_mapped(&self, window: NodeId) -> bool {
         self.entries.get(&window).is_some_and(|e| !e.hidden)
     }

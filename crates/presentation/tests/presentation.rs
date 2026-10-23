@@ -777,6 +777,35 @@ fn remapping_waits_for_a_new_configure_then_draws() {
 }
 
 #[test]
+fn a_configure_in_flight_across_the_unmap_does_not_skip_the_remap_commit() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_mapped(&mut f, win, false);
+    // Sent before the compositor saw the null attach, delivered after it.
+    layer_configure(&mut f, 4);
+    f.requests();
+    set_mapped(&mut f, win, true);
+    f.app.tick();
+    f.turn();
+    let s = shape(&mut f);
+    assert_eq!(s, vec![(SURFACE, op::COMMIT)], "an empty commit, no attach");
+    assert!(!f.app.resource::<Surfaces>().is_configured(win));
+
+    layer_configure(&mut f, 5);
+    let reqs = f.requests();
+    let ack = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(XDG) && r.opcode == op::LAYER_ACK)
+        .expect("the fresh configure is acked");
+    assert_eq!(reqs[ack].reader().uint(), Some(5));
+    let attach = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::ATTACH)
+        .expect("the remap draws after the fresh configure");
+    assert!(ack < attach);
+}
+
+#[test]
 fn set_mapped_on_a_toplevel_does_nothing() {
     let Some((_gpu, mut f)) = fake() else { return };
     let win = configured(&mut f, 320, 200);
