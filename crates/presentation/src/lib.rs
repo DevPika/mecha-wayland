@@ -183,6 +183,7 @@ pub struct Surfaces {
     to_kick: Vec<NodeId>,
     owner: HashMap<ObjectId, NodeId>,
     layer_shell: Option<ZwlrLayerShellV1>,
+    compositor: WlCompositor,
     app_id: String,
     device: Device,
     dmabuf: ZwpLinuxDmabufV1,
@@ -274,6 +275,31 @@ impl Surfaces {
         }
     }
 
+    /// Set which part of a layer window takes input; touches elsewhere
+    /// fall through to what is beneath. `None` restores the default, the
+    /// whole surface. `Some(rects)` is the union of `rects` (logical px,
+    /// rounded outward); `Some(&[])` takes no input at all. Committed
+    /// straight away. No-op for an unknown window.
+    pub fn set_input_region(&mut self, window: NodeId, region: Option<&[Rect]>, wl: &mut Wayland) {
+        let Some(entry) = self.entries.get(&window) else {
+            return;
+        };
+        let surface = entry.surface;
+        match region {
+            None => surface.set_input_region(wl, None),
+            Some(rects) => {
+                let region = self.compositor.create_region(wl);
+                for &r in rects {
+                    let (x, y, w, h) = outward(r);
+                    region.add(wl, x, y, w, h);
+                }
+                surface.set_input_region(wl, Some(region));
+                region.destroy(wl);
+            }
+        }
+        surface.commit(wl);
+    }
+
     pub fn is_mapped(&self, window: NodeId) -> bool {
         self.entries.get(&window).is_some_and(|e| !e.hidden)
     }
@@ -362,6 +388,7 @@ impl Module for PresentationModule {
             layer_shell,
             app_id: self.app_id,
             device,
+            compositor,
             dmabuf,
             modifiers: Vec::new(),
         });

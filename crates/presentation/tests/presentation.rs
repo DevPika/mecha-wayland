@@ -7,7 +7,7 @@ use std::sync::{Mutex, MutexGuard};
 use animation::AnimationModule;
 use app::prelude::*;
 use atlas::Atlas;
-use geometry::Color;
+use geometry::{Color, Rect};
 use gles::{Budget, Device, Error};
 use interactivity::prelude::*;
 use layout::prelude::*;
@@ -33,6 +33,7 @@ const GLOBALS: &[(&str, u32)] = &[
 // buffer 15; the first frame callback is 16. Ids are never reused: the
 // fake sends no `delete_id`.
 const DMABUF: u32 = 5;
+const COMPOSITOR: u32 = 4;
 const SEAT: u32 = 7;
 const SURFACE: u32 = 9;
 const XDG: u32 = 10;
@@ -58,6 +59,10 @@ const VENDOR_MOD: u64 = 0x0100_0000_0000_0002;
 // Opcodes, from the XML order.
 mod op {
     pub const CREATE_SURFACE: u16 = 0;
+    pub const CREATE_REGION: u16 = 1;
+    pub const REGION_DESTROY: u16 = 0;
+    pub const REGION_ADD: u16 = 1;
+    pub const SET_INPUT_REGION: u16 = 5;
     pub const CREATE_PARAMS: u16 = 1;
     pub const PARAMS_DESTROY: u16 = 0;
     pub const PARAMS_ADD: u16 = 1;
@@ -780,6 +785,89 @@ fn set_mapped_on_a_toplevel_does_nothing() {
     set_mapped(&mut f, win, true);
     assert!(shape(&mut f).is_empty());
     assert!(f.app.resource::<Surfaces>().is_configured(win));
+}
+
+fn set_input_region(f: &mut Fake, win: NodeId, region: Option<&[Rect]>) {
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.set_input_region(win, region, &mut wl);
+    }
+    f.turn();
+}
+
+#[test]
+fn empty_input_region_sends_an_empty_region() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_input_region(&mut f, win, Some(&[]));
+    let reqs = f.requests();
+    let create = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(COMPOSITOR) && r.opcode == op::CREATE_REGION)
+        .expect("a region is created");
+    let region = reqs[create].reader().object().expect("new region id");
+    assert!(
+        !reqs
+            .iter()
+            .any(|r| r.sender == region && r.opcode == op::REGION_ADD)
+    );
+    let set = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::SET_INPUT_REGION)
+        .expect("the region is set");
+    assert_eq!(reqs[set].reader().object(), Some(region));
+    let destroy = reqs
+        .iter()
+        .position(|r| r.sender == region && r.opcode == op::REGION_DESTROY)
+        .expect("the region is destroyed");
+    let commit = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::COMMIT)
+        .expect("the change is committed");
+    assert!(
+        create < set && set < destroy && destroy < commit,
+        "{reqs:?}"
+    );
+}
+
+#[test]
+fn input_region_rects_are_added() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_input_region(&mut f, win, Some(&[Rect::new(0., 0., 10.5, 20.)]));
+    let reqs = f.requests();
+    let region = reqs
+        .iter()
+        .find(|r| r.sender == ObjectId(COMPOSITOR) && r.opcode == op::CREATE_REGION)
+        .and_then(|r| r.reader().object())
+        .expect("a region is created");
+    let adds: Vec<_> = reqs
+        .iter()
+        .filter(|r| r.sender == region && r.opcode == op::REGION_ADD)
+        .collect();
+    assert_eq!(adds.len(), 1, "{reqs:?}");
+    let mut r = adds[0].reader();
+    assert_eq!(
+        (r.int(), r.int(), r.int(), r.int()),
+        (Some(0), Some(0), Some(11), Some(20))
+    );
+}
+
+#[test]
+fn none_resets_the_input_region() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_input_region(&mut f, win, None);
+    let reqs = f.requests();
+    let set = reqs
+        .iter()
+        .find(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::SET_INPUT_REGION)
+        .expect("the region is reset");
+    assert_eq!(set.reader().object(), Some(ObjectId(0)));
+    assert!(
+        reqs.iter()
+            .any(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::COMMIT)
+    );
 }
 
 // ── the frame loop ─────────────────────────────────────────────────────
