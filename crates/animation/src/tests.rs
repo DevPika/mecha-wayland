@@ -457,7 +457,7 @@ fn children_inherit_and_explicit_settings_override() {
 }
 
 #[test]
-fn zero_duration_disables_inheritance_and_syncs_without_relayout() {
+fn zero_duration_applies_from_the_next_move_and_disables_inheritance() {
     let mut app = app();
     let (window, panel) = scene(&mut app);
     app.emit(MoveTo(100.0), panel);
@@ -466,7 +466,22 @@ fn zero_duration_disables_inheritance_and_syncs_without_relayout() {
     advance(&mut app, window, started + Duration::from_millis(500));
     *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() = animated(0, |t| t);
     app.tick();
+    assert_eq!(
+        app.component::<Layout>(panel).unwrap().rect.x(),
+        25.0,
+        "settings take effect from the next move; the running one keeps going"
+    );
+    assert_eq!(start(&app, panel), started);
+    advance(&mut app, window, started + Duration::from_millis(1000));
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 100.0);
+
+    app.emit(MoveTo(150.0), panel);
+    app.tick();
+    assert_eq!(
+        app.component::<Layout>(panel).unwrap().rect.x(),
+        150.0,
+        "the next move snaps"
+    );
     assert!(
         app.component::<Transition>(panel)
             .unwrap()
@@ -563,6 +578,34 @@ fn window_roots_snap_and_frame_animation_reaches_the_target() {
     app.signal(Frame(window));
     app.flush();
     assert_eq!(app.component::<Layout>(panel).unwrap().rect.x(), 100.0);
+}
+
+#[test]
+fn a_running_transition_requests_a_frame_every_tick_until_it_finishes() {
+    let mut app = app();
+    let (window, panel) = scene(&mut app);
+    app.emit(MoveTo(100.0), panel);
+    app.tick();
+    let started = start(&app, panel);
+    advance(&mut app, window, started + Duration::from_millis(500));
+    app.signal(Frame(window));
+    app.flush();
+    app.resource_mut::<Requests>().0.clear();
+
+    // A clean tick with nothing new: the move is still running, so the window
+    // must be asked for a frame or the animation would stall.
+    app.tick();
+    assert_eq!(app.resource::<Requests>().0, [window]);
+
+    advance(&mut app, window, started + Duration::from_millis(1000));
+    app.signal(Frame(window));
+    app.flush();
+    app.resource_mut::<Requests>().0.clear();
+    app.tick();
+    assert!(
+        app.resource::<Requests>().0.is_empty(),
+        "a finished move asks for nothing"
+    );
 }
 
 #[test]
@@ -668,8 +711,7 @@ fn speed_distance_accounts_for_every_layout_field() {
         ];
         *fields.into_iter().nth(field).unwrap() += 50.0;
         *app.component_mut::<ComputedLayout>(panel).unwrap() = target;
-        app.signal(LayoutDone { roots: vec![] });
-        app.flush();
+        app.tick();
 
         let running = app
             .component::<Transition>(panel)
@@ -705,8 +747,7 @@ fn speed_uses_one_duration_for_all_fields_not_diagonal_distance() {
         border: Insets::all(10.0),
     };
     *app.component_mut::<ComputedLayout>(panel).unwrap() = target;
-    app.signal(LayoutDone { roots: vec![] });
-    app.flush();
+    app.tick();
     let running = app
         .component::<Transition>(panel)
         .unwrap()
@@ -776,7 +817,7 @@ fn speed_retargeting_uses_displayed_layout_and_new_settings() {
 }
 
 #[test]
-fn speed_is_inherited_and_zero_duration_still_overrides_it() {
+fn speed_is_inherited_and_a_zero_duration_overrides_it_from_the_next_move() {
     let mut app = app();
     let (window, panel) = scene(&mut app);
     *app.component_mut::<LayoutAnimationSettings>(panel).unwrap() =
@@ -803,7 +844,20 @@ fn speed_is_inherited_and_zero_duration_still_overrides_it() {
 
     *app.component_mut::<LayoutAnimationSettings>(child).unwrap() = animated(0, |t| t);
     app.tick();
-    assert_eq!(app.component::<Layout>(child).unwrap().rect.x(), 200.0);
+    assert_eq!(
+        app.component::<Layout>(child).unwrap().rect.x(),
+        50.0,
+        "the child's running move keeps its inherited speed"
+    );
+    advance(&mut app, window, started + Duration::from_millis(2000));
+
+    app.emit(MoveTo(300.0), panel);
+    app.tick();
+    assert_eq!(
+        app.component::<Layout>(child).unwrap().rect.x(),
+        300.0,
+        "the child's next move snaps"
+    );
     assert!(
         app.component::<Transition>(child)
             .unwrap()

@@ -1,9 +1,9 @@
 //! The renderer-facing geometry and its transitions from Taffy's resolved target.
 
-use std::collections::HashSet;
 use std::time::Instant;
 
 use app::prelude::*;
+use app::{Emitted, Spawned};
 use geometry::{Insets, Rect};
 use layout::{ComputedLayout, LayoutDone, LayoutRoot};
 use window::{Frame, InWindow, RequestFrame};
@@ -105,59 +105,100 @@ pub(crate) struct Transition {
 }
 impl Component for Transition {}
 
-/// Reconcile resolved targets with displayed layouts; do not advance time here.
+/// Nodes spawned but not yet visited by a layout pass. A zero-sized first
+/// resolution produces no `ComputedLayout` change event, so these are found
+/// by membership in the roots a pass recomputed instead.
+#[derive(Default)]
+pub(crate) struct Unresolved(pub(crate) Vec<NodeId>);
+impl Resource for Unresolved {}
+
+/// Nodes with a running layout transition: the ones whose windows still need
+/// frames. Stale and finished entries are dropped on the next `LayoutDone`.
+#[derive(Default)]
+pub(crate) struct Active(Vec<NodeId>);
+impl Resource for Active {}
+
+/// Every new node starts unresolved.
+pub(crate) fn on_spawned(app: &mut App, spawned: &Spawned) {
+    app.resource_mut::<Unresolved>().0.push(spawned.id);
+}
+
+/// Copy first resolutions and keep running transitions drawing; do not
+/// advance time here.
 ///
-/// For each node, this system:
+/// `LayoutDone` is queued by layout's `PostTick` system once per tick,
+/// whatever happened. Only two kinds of node need anything from it:
+/// - Unresolved nodes inside a root this pass recomputed copy their target,
+///   even when it stayed zero, and request a frame if that changed `Layout`.
+/// - Nodes with a running transition request a frame for their window, so an
+///   animation never waits on some other wake-up to reach its next frame.
+///
+/// Target changes are reconciled by [`on_target_changed`], node by node.
+/// Nothing else is visited, so a tick where no layout changed costs one
+/// check per running transition.
+pub(crate) fn on_layout_done(app: &mut App, done: &LayoutDone) {
+    let mut windows = Vec::new();
+    if done.recomputed() {
+        let pending = std::mem::take(&mut app.resource_mut::<Unresolved>().0);
+        let mut still = Vec::new();
+        for id in pending {
+            if !app.is_live(id) {
+                continue;
+            }
+            let visited = std::iter::once(id)
+                .chain(app.ancestors(id))
+                .any(|node| done.roots.contains(&node));
+            if !visited {
+                still.push(id);
+                continue;
+            }
+            let target = Layout::from(*app.component::<ComputedLayout>(id).unwrap());
+            app.component_mut::<Transition>(id).unwrap().resolved = true;
+            let changed = app.component_mut::<Layout>(id).unwrap().set_if_neq(target);
+            if changed && let Some(window) = app.component::<InWindow>(id).unwrap().0 {
+                push_unique(&mut windows, window);
+            }
+        }
+        app.resource_mut::<Unresolved>().0.extend(still);
+    }
+
+    let active = std::mem::take(&mut app.resource_mut::<Active>().0);
+    let mut still = Vec::new();
+    for id in active {
+        if !app.is_live(id) || app.component::<Transition>(id).unwrap().running.is_none() {
+            continue;
+        }
+        if let Some(window) = app.component::<InWindow>(id).unwrap().0 {
+            push_unique(&mut windows, window);
+        }
+        still.push(id);
+    }
+    app.resource_mut::<Active>().0 = still;
+
+    finish(app, windows);
+}
+
+/// Reconcile the nodes whose target changed with their displayed layouts.
+///
+/// For each resolved node:
 /// - Copies the target and cancels a transition when animation is disabled,
 ///   there is no window, or the node is a layout root.
 /// - Keeps a running transition if its destination has not changed.
 /// - Otherwise starts or replaces a transition from the currently displayed
 ///   layout, or leaves the node idle if it already equals its target.
-/// - Requests one frame per window with a running transition or a changed copy.
 ///
-/// `LayoutDone` is queued by layout's `PostTick` system. By its dispatch, all
-/// `PostTick` systems (including the clock sample) and the queued change-event
-/// handlers have run. A later `PostTick` system could also do this job if ordered
-/// after layout and the clock; this signal explicitly uses layout's completion
-/// point instead. Writes here are after the normal `Layout` change drain.
-///
-/// The recomputed roots identify nodes receiving their first resolution, even
-/// if their target stayed zero. All nodes are still reconciled on clean ticks:
-/// settings can change without layout recomputation, and active animations
-/// still need frames. Positive timing/easing changes alone do not replace a
-/// running transition; it keeps its captured settings until its target changes.
-/// Copies made after the normal `Layout` drain are emitted here, so consumers
-/// see initial and snapped layouts before the requested frame.
-pub(crate) fn on_layout_done(app: &mut App, done: &LayoutDone) {
+/// Settings are read here, when a target changes: a new duration, easing or
+/// a zero duration takes effect from the next move, and a running transition
+/// keeps the settings it started with.
+pub(crate) fn on_target_changed(app: &mut App, changed: &Emitted<OnChanged<ComputedLayout>>) {
     let now = app.resource::<Time>().now();
-    // A zero-sized first resolution produces no ComputedLayout change event.
-    // LayoutDone identifies the entire subtree visited by each layout pass.
-    let resolved_this_pass: HashSet<NodeId> = done
-        .roots
-        .iter()
-        .flat_map(|&root| std::iter::once(root).chain(app.descendants(root)))
-        .collect();
-    let nodes: Vec<NodeId> = std::iter::once(app.root())
-        .chain(app.descendants(app.root()))
-        .collect();
     let mut windows = Vec::new();
-    for id in nodes {
-        let target = Layout::from(*app.component::<ComputedLayout>(id).unwrap());
-        let window = app.component::<InWindow>(id).unwrap().0;
-        if !app.component::<Transition>(id).unwrap().resolved {
-            if !resolved_this_pass.contains(&id) {
-                continue;
-            }
-            app.component_mut::<Transition>(id).unwrap().resolved = true;
-            let changed = app.component_mut::<Layout>(id).unwrap().set_if_neq(target);
-            if changed
-                && let Some(window) = window
-                && !windows.contains(&window)
-            {
-                windows.push(window);
-            }
+    for &id in changed.targets.iter() {
+        if !app.is_live(id) || !app.component::<Transition>(id).unwrap().resolved {
             continue;
         }
+        let target = Layout::from(*app.component::<ComputedLayout>(id).unwrap());
+        let window = app.component::<InWindow>(id).unwrap().0;
         let configuration = settings::<LayoutAnimationSettings>(app, id).filter(|s| {
             !matches!(s.time, AnimationTime::Duration(d) if d.is_zero())
                 && window.is_some()
@@ -166,46 +207,57 @@ pub(crate) fn on_layout_done(app: &mut App, done: &LayoutDone) {
         let Some(configuration) = configuration else {
             let changed = app.component_mut::<Layout>(id).unwrap().set_if_neq(target);
             app.component_mut::<Transition>(id).unwrap().running = None;
-            // Request directly even without a renderer listening to the
-            // change notification queued below.
-            if changed
-                && let Some(window) = window
-                && !windows.contains(&window)
-            {
-                windows.push(window);
+            if changed && let Some(window) = window {
+                push_unique(&mut windows, window);
             }
             continue;
         };
         let current = *app.component::<Layout>(id).unwrap();
         let window = window.unwrap();
-        let mut transition = app.component_mut::<Transition>(id).unwrap();
-        if transition
-            .running
-            .as_ref()
-            .is_some_and(|t| t.target == target)
-        {
-            // Keep the original start and clock across clean layout passes.
-        } else if current != target {
-            transition.running = Some(Running::new(current, target, now, configuration));
-        } else {
-            transition.running = None;
-        }
-        if transition.running.is_some() && !windows.contains(&window) {
-            windows.push(window);
+        let running = {
+            let mut transition = app.component_mut::<Transition>(id).unwrap();
+            if transition
+                .running
+                .as_ref()
+                .is_some_and(|t| t.target == target)
+            {
+                // Keep the original start and clock.
+            } else if current != target {
+                transition.running = Some(Running::new(current, target, now, configuration));
+            } else {
+                transition.running = None;
+            }
+            transition.running.is_some()
+        };
+        if running {
+            push_unique(&mut app.resource_mut::<Active>().0, id);
+            push_unique(&mut windows, window);
         }
     }
+    finish(app, windows);
+}
+
+/// Drop `Transition`'s change records, announce `Layout` writes made after
+/// the normal drain, and request the frames.
+fn finish(app: &mut App, windows: Vec<NodeId>) {
     // Transition is private bookkeeping, not a consumer-facing change event.
     app.take_changed::<Transition>().for_each(drop);
 
     // The normal PostTick drain already ran. Notify consumers about displayed
     // Layout writes made here now, and clear their records so they don't fire
-    // again on the next tick. This includes later snaps, not just first copies.
+    // again on the next tick.
     let changed: Vec<NodeId> = app.take_changed::<Layout>().collect();
     if !changed.is_empty() {
         app.emit(OnChanged::<Layout>::new(), changed);
     }
     for window in windows {
         app.signal(RequestFrame(window));
+    }
+}
+
+fn push_unique(list: &mut Vec<NodeId>, id: NodeId) {
+    if !list.contains(&id) {
+        list.push(id);
     }
 }
 

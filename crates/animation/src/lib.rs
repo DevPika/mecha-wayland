@@ -234,6 +234,15 @@ pub struct AnimationModule;
 impl Module for AnimationModule {
     /// Register displayed layouts and the systems in execution order.
     fn install(self, app: &mut App) {
+        // Nodes spawned before this module (at least the root) never send
+        // it a `Spawned`; they start unresolved like any other.
+        let existing: Vec<NodeId> = std::iter::once(app.root())
+            .chain(app.descendants(app.root()))
+            .collect();
+        app.init_resource::<displayed_layout::Unresolved>();
+        app.resource_mut::<displayed_layout::Unresolved>()
+            .0
+            .extend(existing);
         app.init_resource::<Time>()
             .system::<PostTick>(time::update_time)
             .system::<Frame>(time::update_time)
@@ -243,8 +252,12 @@ impl Module for AnimationModule {
             .register_component::<displayed_layout::Transition>()
             .register_component::<AnimatedPaint>()
             .register_component::<PaintTransition>()
+            .init_resource::<displayed_layout::Unresolved>()
+            .init_resource::<displayed_layout::Active>()
             .system(paint::on_spawned)
+            .system(displayed_layout::on_spawned)
             .system(displayed_layout::on_layout_done)
+            .system(displayed_layout::on_target_changed)
             .system(paint::on_paint_changed)
             .system(displayed_layout::on_frame)
             .system(paint::on_frame);
