@@ -182,6 +182,8 @@ pub struct Surfaces {
     entries: HashMap<NodeId, Entry>,
     /// Windows hidden before `on_spawned` made their entry.
     pending_hidden: HashSet<NodeId>,
+    /// The layer wanted for windows whose entry does not exist yet.
+    pending_layer: HashMap<NodeId, Layer>,
     /// Windows shown while still configured; `kick` needs the `App`, so
     /// `on_post_tick` kicks them.
     to_kick: Vec<NodeId>,
@@ -296,6 +298,43 @@ impl Surfaces {
         }
     }
 
+    /// Move a layer window to `layer` without unmapping it: sends
+    /// `zwlr_layer_surface_v1.set_layer` and commits. This is the way to
+    /// hide a layer window without [`Surfaces::set_mapped`]: park it in
+    /// `Layer::Background` (under whatever covers the screen) and move it
+    /// back to its own layer to show it. The surface stays mapped, so
+    /// nothing is torn down and no new configure is needed, and the
+    /// compositor keeps the window's place in its stacking order.
+    ///
+    /// The same layer sends nothing. A window whose entry does not exist
+    /// yet (spawned this tick) starts in `layer` instead of the layer in
+    /// its [`Role`]. No-op for a toplevel.
+    pub fn set_layer(&mut self, window: NodeId, layer: Layer, wl: &mut Wayland) {
+        let Some(entry) = self.entries.get_mut(&window) else {
+            self.pending_layer.insert(window, layer);
+            return;
+        };
+        let (Shell::Layer(ls), Some((role, _))) = (&entry.shell, entry.layer.as_mut()) else {
+            return;
+        };
+        if role.layer == layer {
+            return;
+        }
+        role.layer = layer;
+        ls.set_layer(wl, layer);
+        entry.surface.commit(wl);
+    }
+
+    /// The current layer of a known layer window; `None` for a toplevel
+    /// or an unknown window.
+    pub fn layer_of(&self, window: NodeId) -> Option<Layer> {
+        self.entries
+            .get(&window)?
+            .layer
+            .as_ref()
+            .map(|(role, _)| role.layer)
+    }
+
     /// Set which part of a window takes input; touches elsewhere fall
     /// through to what is beneath. Works for any known window, toplevel
     /// or layer; call it once the window is configured. `None` restores
@@ -406,6 +445,7 @@ impl Module for PresentationModule {
         app.register_component::<Role>().insert_resource(Surfaces {
             entries: HashMap::new(),
             pending_hidden: HashSet::new(),
+            pending_layer: HashMap::new(),
             to_kick: Vec::new(),
             owner: HashMap::new(),
             layer_shell,
@@ -488,7 +528,13 @@ fn on_spawned(app: &mut App, s: &Spawned) {
     let (mut surfaces, mut wl) = app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
     let surface = compositor.create_surface(&mut wl);
     let layer = match &role {
-        Role::Layer(l) => Some((l.clone(), requested)),
+        Role::Layer(l) => {
+            let mut l = l.clone();
+            if let Some(wanted) = surfaces.pending_layer.remove(&s.id) {
+                l.layer = wanted;
+            }
+            Some((l, requested))
+        }
         Role::Toplevel => None,
     };
     let shell = match role {
@@ -501,7 +547,8 @@ fn on_spawned(app: &mut App, s: &Spawned) {
             surfaces.owner.insert(toplevel.id(), s.id);
             Shell::Toplevel { xdg, toplevel }
         }
-        Role::Layer(l) => {
+        Role::Layer(_) => {
+            let l = &layer.as_ref().expect("a layer role has layer state").0;
             let shell = surfaces.layer_shell.expect(
                 "presentation: a Role::Layer window needs zwlr_layer_shell_v1, which the compositor does not offer",
             );
@@ -922,6 +969,16 @@ fn on_surface(app: &mut App, e: &WlSurfaceEvent) {
 /// slots and their targets, then the surface. A late event for any of
 /// them finds no owner and is skipped.
 fn on_removed(app: &mut App, _: &Removed) {
+    let dead: Vec<NodeId> = app
+        .resource::<Surfaces>()
+        .pending_layer
+        .keys()
+        .copied()
+        .filter(|&w| !app.is_live(w))
+        .collect();
+    for w in dead {
+        app.resource_mut::<Surfaces>().pending_layer.remove(&w);
+    }
     let gone: Vec<NodeId> = {
         let surfaces = app.resource::<Surfaces>();
         surfaces

@@ -90,6 +90,7 @@ mod op {
     pub const LAYER_SET_ZONE: u16 = 2;
     pub const LAYER_SET_KEYBOARD: u16 = 4;
     pub const LAYER_ACK: u16 = 6;
+    pub const LAYER_SET_LAYER: u16 = 8;
     /// No test removes a layer window (only a toplevel's removal is
     /// covered), so this opcode names a request no test sends.
     #[allow(dead_code)]
@@ -887,6 +888,95 @@ fn set_mapped_on_a_toplevel_does_nothing() {
     set_mapped(&mut f, win, true);
     assert!(shape(&mut f).is_empty());
     assert!(f.app.resource::<Surfaces>().is_configured(win));
+}
+
+fn set_layer(f: &mut Fake, win: NodeId, layer: Layer) {
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.set_layer(win, layer, &mut wl);
+    }
+    f.turn();
+}
+
+#[test]
+fn set_layer_sends_the_layer_then_commits_without_unmapping() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_layer(&mut f, win, Layer::Background);
+    let reqs = f.requests();
+    let shape: Vec<(u32, u16)> = reqs.iter().map(|r| (r.sender.0, r.opcode)).collect();
+    assert_eq!(
+        shape,
+        vec![(XDG, op::LAYER_SET_LAYER), (SURFACE, op::COMMIT)],
+        "{reqs:?}"
+    );
+    assert_eq!(reqs[0].reader().uint(), Some(Layer::Background as u32));
+    assert!(!reqs.iter().any(|r| r.opcode == op::ATTACH));
+    let s = f.app.resource::<Surfaces>();
+    assert_eq!(s.layer_of(win), Some(Layer::Background));
+    assert!(s.is_mapped(win));
+    assert!(s.is_configured(win));
+}
+
+#[test]
+fn set_layer_to_the_current_layer_sends_nothing() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_layer(&mut f, win, Layer::Top);
+    assert!(shape(&mut f).is_empty());
+    set_layer(&mut f, win, Layer::Background);
+    f.requests();
+    set_layer(&mut f, win, Layer::Background);
+    assert!(shape(&mut f).is_empty());
+    set_layer(&mut f, win, Layer::Top);
+    let reqs = f.requests();
+    assert_eq!(reqs[0].opcode, op::LAYER_SET_LAYER);
+    assert_eq!(reqs[0].reader().uint(), Some(Layer::Top as u32));
+}
+
+#[test]
+fn set_layer_before_spawn_makes_the_layer_surface_start_there() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let root = f.app.root();
+    let win = f
+        .app
+        .spawn_with(
+            root,
+            window().layout(LayoutStyle::default().column()),
+            (layer_role(),),
+        )
+        .id();
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.set_layer(win, Layer::Background, &mut wl);
+    }
+    f.app.tick();
+    f.turn();
+    let reqs = f.requests();
+    let get = reqs
+        .iter()
+        .find(|r| r.sender == ObjectId(8) && r.opcode == op::GET_LAYER_SURFACE)
+        .expect("the layer surface is requested");
+    let mut r = get.reader();
+    r.object();
+    r.object();
+    r.object_opt();
+    assert_eq!(r.uint(), Some(Layer::Background as u32));
+    assert!(!reqs.iter().any(|r| r.opcode == op::LAYER_SET_LAYER));
+    assert_eq!(
+        f.app.resource::<Surfaces>().layer_of(win),
+        Some(Layer::Background)
+    );
+}
+
+#[test]
+fn set_layer_on_a_toplevel_does_nothing() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 320, 200);
+    f.requests();
+    set_layer(&mut f, win, Layer::Background);
+    assert!(shape(&mut f).is_empty());
+    assert_eq!(f.app.resource::<Surfaces>().layer_of(win), None);
 }
 
 fn set_input_region(f: &mut Fake, win: NodeId, region: Option<&[Rect]>) {
