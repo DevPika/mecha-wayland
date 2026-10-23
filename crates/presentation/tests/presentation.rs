@@ -637,6 +637,151 @@ fn a_layer_configure_acks_and_draws_too() {
     assert_eq!(attach.reader().object(), Some(ObjectId(LAYER_BUF_A)));
 }
 
+fn layer_role() -> Role {
+    Role::Layer(LayerRole {
+        layer: Layer::Top,
+        anchor: Anchor::TOP,
+        exclusive_zone: 0,
+        namespace: "bar".into(),
+        keyboard_interactivity: KeyboardInteractivity::None,
+    })
+}
+
+/// A layer window spawned and flushed, requests drained, not yet configured.
+fn spawn_layer(f: &mut Fake) -> NodeId {
+    let root = f.app.root();
+    let win = f
+        .app
+        .spawn_with(
+            root,
+            window().layout(LayoutStyle::default().column()),
+            (layer_role(),),
+        )
+        .id();
+    f.app.tick();
+    f.turn();
+    f.requests();
+    win
+}
+
+fn layer_configure(f: &mut Fake, serial: u32) {
+    f.send(XDG, ev::LAYER_CONFIGURE, |w| {
+        w.uint(serial);
+        w.uint(800);
+        w.uint(32);
+    });
+    f.turn();
+    f.app.tick();
+    f.turn();
+}
+
+fn set_mapped(f: &mut Fake, win: NodeId, mapped: bool) {
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.set_mapped(win, mapped, &mut wl);
+    }
+    f.turn();
+}
+
+#[test]
+fn hiding_before_spawn_suppresses_the_first_draw() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let root = f.app.root();
+    let win = f
+        .app
+        .spawn_with(
+            root,
+            window().layout(LayoutStyle::default().column()),
+            (layer_role(),),
+        )
+        .id();
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.set_mapped(win, false, &mut wl);
+    }
+    f.app.tick();
+    f.turn();
+    f.requests();
+    layer_configure(&mut f, 3);
+    assert!(log(&f).contains(&"Resized 800x32".to_string()));
+    let reqs = f.requests();
+    let ack = reqs
+        .iter()
+        .find(|r| r.sender == ObjectId(XDG) && r.opcode == op::LAYER_ACK)
+        .expect("the configure is acked");
+    assert_eq!(ack.reader().uint(), Some(3));
+    assert!(
+        !reqs
+            .iter()
+            .any(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::ATTACH),
+        "a hidden window draws nothing"
+    );
+    assert!(!f.app.resource::<Surfaces>().is_mapped(win));
+}
+
+/// A layer window configured and drawn, requests drained.
+fn drawn_layer(f: &mut Fake) -> NodeId {
+    let win = spawn_layer(f);
+    layer_configure(f, 3);
+    assert_eq!(attaches(f), vec![LAYER_BUF_A]);
+    win
+}
+
+#[test]
+fn unmapping_attaches_null_and_commits() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_mapped(&mut f, win, false);
+    let reqs = f.requests();
+    let on_surface: Vec<&wayland::fake::Request> = reqs
+        .iter()
+        .filter(|r| r.sender == ObjectId(SURFACE))
+        .collect();
+    assert_eq!(on_surface.len(), 2, "{reqs:?}");
+    assert_eq!(on_surface[0].opcode, op::ATTACH);
+    assert_eq!(on_surface[0].reader().object(), Some(ObjectId(0)));
+    assert_eq!(on_surface[1].opcode, op::COMMIT);
+    assert!(!f.app.resource::<Surfaces>().is_mapped(win));
+    assert!(!f.app.resource::<Surfaces>().is_configured(win));
+}
+
+#[test]
+fn remapping_waits_for_a_new_configure_then_draws() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_mapped(&mut f, win, false);
+    f.requests();
+    set_mapped(&mut f, win, true);
+    let s = shape(&mut f);
+    assert_eq!(s, vec![(SURFACE, op::COMMIT)]);
+    assert!(f.app.resource::<Surfaces>().is_mapped(win));
+
+    layer_configure(&mut f, 4);
+    let reqs = f.requests();
+    let ack = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(XDG) && r.opcode == op::LAYER_ACK)
+        .expect("the new configure is acked");
+    assert_eq!(reqs[ack].reader().uint(), Some(4));
+    let attach = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::ATTACH)
+        .expect("the remap draws");
+    assert!(ack < attach);
+    assert_ne!(reqs[attach].reader().object(), Some(ObjectId(0)));
+}
+
+#[test]
+fn set_mapped_on_a_toplevel_does_nothing() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 320, 200);
+    f.requests();
+    set_mapped(&mut f, win, false);
+    set_mapped(&mut f, win, true);
+    assert!(shape(&mut f).is_empty());
+    assert!(f.app.resource::<Surfaces>().is_configured(win));
+}
+
 // ── the frame loop ─────────────────────────────────────────────────────
 
 #[test]
@@ -1401,4 +1546,30 @@ fn a_touch_down_and_up_over_a_leaf_fires_press_release_and_clicked() {
             format!("Clicked Some({leaf:?})"),
         ]
     );
+}
+
+#[test]
+fn showing_a_window_hidden_before_its_first_buffer_draws_without_a_new_configure() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let root = f.app.root();
+    let win = f
+        .app
+        .spawn_with(
+            root,
+            window().layout(LayoutStyle::default().column()),
+            (layer_role(),),
+        )
+        .id();
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.set_mapped(win, false, &mut wl);
+    }
+    f.app.tick();
+    f.turn();
+    layer_configure(&mut f, 3);
+    f.requests();
+    set_mapped(&mut f, win, true);
+    f.app.tick();
+    f.turn();
+    assert_eq!(attaches(&mut f), vec![LAYER_BUF_A]);
 }
