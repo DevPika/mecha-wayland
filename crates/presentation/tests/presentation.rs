@@ -7,7 +7,7 @@ use std::sync::{Mutex, MutexGuard};
 use animation::AnimationModule;
 use app::prelude::*;
 use atlas::Atlas;
-use geometry::Color;
+use geometry::{Color, Rect};
 use gles::{Budget, Device, Error};
 use interactivity::prelude::*;
 use layout::prelude::*;
@@ -33,6 +33,7 @@ const GLOBALS: &[(&str, u32)] = &[
 // buffer 15; the first frame callback is 16. Ids are never reused: the
 // fake sends no `delete_id`.
 const DMABUF: u32 = 5;
+const COMPOSITOR: u32 = 4;
 const SEAT: u32 = 7;
 const SURFACE: u32 = 9;
 const XDG: u32 = 10;
@@ -58,6 +59,10 @@ const VENDOR_MOD: u64 = 0x0100_0000_0000_0002;
 // Opcodes, from the XML order.
 mod op {
     pub const CREATE_SURFACE: u16 = 0;
+    pub const CREATE_REGION: u16 = 1;
+    pub const REGION_DESTROY: u16 = 0;
+    pub const REGION_ADD: u16 = 1;
+    pub const SET_INPUT_REGION: u16 = 5;
     pub const CREATE_PARAMS: u16 = 1;
     pub const PARAMS_DESTROY: u16 = 0;
     pub const PARAMS_ADD: u16 = 1;
@@ -85,6 +90,7 @@ mod op {
     pub const LAYER_SET_ZONE: u16 = 2;
     pub const LAYER_SET_KEYBOARD: u16 = 4;
     pub const LAYER_ACK: u16 = 6;
+    pub const LAYER_SET_LAYER: u16 = 8;
     /// No test removes a layer window (only a toplevel's removal is
     /// covered), so this opcode names a request no test sends.
     #[allow(dead_code)]
@@ -635,6 +641,425 @@ fn a_layer_configure_acks_and_draws_too() {
         .find(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::ATTACH)
         .unwrap();
     assert_eq!(attach.reader().object(), Some(ObjectId(LAYER_BUF_A)));
+}
+
+fn layer_role() -> Role {
+    Role::Layer(LayerRole {
+        layer: Layer::Top,
+        anchor: Anchor::TOP,
+        exclusive_zone: 0,
+        namespace: "bar".into(),
+        keyboard_interactivity: KeyboardInteractivity::None,
+    })
+}
+
+/// A layer window spawned and flushed, requests drained, not yet configured.
+fn spawn_layer(f: &mut Fake) -> NodeId {
+    let root = f.app.root();
+    let win = f
+        .app
+        .spawn_with(
+            root,
+            window().layout(LayoutStyle::default().column()),
+            (layer_role(),),
+        )
+        .id();
+    f.app.tick();
+    f.turn();
+    f.requests();
+    win
+}
+
+fn layer_configure(f: &mut Fake, serial: u32) {
+    f.send(XDG, ev::LAYER_CONFIGURE, |w| {
+        w.uint(serial);
+        w.uint(800);
+        w.uint(32);
+    });
+    f.turn();
+    f.app.tick();
+    f.turn();
+}
+
+fn set_mapped(f: &mut Fake, win: NodeId, mapped: bool) {
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.set_mapped(win, mapped, &mut wl);
+    }
+    f.turn();
+}
+
+#[test]
+fn hiding_before_spawn_suppresses_the_first_draw() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let root = f.app.root();
+    let win = f
+        .app
+        .spawn_with(
+            root,
+            window().layout(LayoutStyle::default().column()),
+            (layer_role(),),
+        )
+        .id();
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.set_mapped(win, false, &mut wl);
+    }
+    f.app.tick();
+    f.turn();
+    f.requests();
+    layer_configure(&mut f, 3);
+    assert!(log(&f).contains(&"Resized 800x32".to_string()));
+    let reqs = f.requests();
+    let ack = reqs
+        .iter()
+        .find(|r| r.sender == ObjectId(XDG) && r.opcode == op::LAYER_ACK)
+        .expect("the configure is acked");
+    assert_eq!(ack.reader().uint(), Some(3));
+    assert!(
+        !reqs
+            .iter()
+            .any(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::ATTACH),
+        "a hidden window draws nothing"
+    );
+    assert!(!f.app.resource::<Surfaces>().is_mapped(win));
+}
+
+/// What showing a drawn layer window sends: the layer state the unmap
+/// reset, then an empty commit.
+const REMAP_SHAPE: [(u32, u16); 5] = [
+    (XDG, op::LAYER_SET_ANCHOR),
+    (XDG, op::LAYER_SET_ZONE),
+    (XDG, op::LAYER_SET_KEYBOARD),
+    (XDG, op::LAYER_SET_SIZE),
+    (SURFACE, op::COMMIT),
+];
+
+/// A layer window configured and drawn, requests drained.
+fn drawn_layer(f: &mut Fake) -> NodeId {
+    let win = spawn_layer(f);
+    layer_configure(f, 3);
+    assert_eq!(attaches(f), vec![LAYER_BUF_A]);
+    win
+}
+
+#[test]
+fn unmapping_attaches_null_and_commits() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_mapped(&mut f, win, false);
+    let reqs = f.requests();
+    let on_surface: Vec<&wayland::fake::Request> = reqs
+        .iter()
+        .filter(|r| r.sender == ObjectId(SURFACE))
+        .collect();
+    assert_eq!(on_surface.len(), 2, "{reqs:?}");
+    assert_eq!(on_surface[0].opcode, op::ATTACH);
+    assert_eq!(on_surface[0].reader().object(), Some(ObjectId(0)));
+    assert_eq!(on_surface[1].opcode, op::COMMIT);
+    assert!(!f.app.resource::<Surfaces>().is_mapped(win));
+    assert!(!f.app.resource::<Surfaces>().is_configured(win));
+}
+
+#[test]
+fn remapping_waits_for_a_new_configure_then_draws() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_mapped(&mut f, win, false);
+    f.requests();
+    set_mapped(&mut f, win, true);
+    let s = shape(&mut f);
+    assert_eq!(s, REMAP_SHAPE);
+    assert!(f.app.resource::<Surfaces>().is_mapped(win));
+
+    layer_configure(&mut f, 4);
+    let reqs = f.requests();
+    let ack = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(XDG) && r.opcode == op::LAYER_ACK)
+        .expect("the new configure is acked");
+    assert_eq!(reqs[ack].reader().uint(), Some(4));
+    let attach = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::ATTACH)
+        .expect("the remap draws");
+    assert!(ack < attach);
+    assert_ne!(reqs[attach].reader().object(), Some(ObjectId(0)));
+}
+
+#[test]
+fn remapping_resends_the_layer_state_the_unmap_reset() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let root = f.app.root();
+    let role = Role::Layer(LayerRole {
+        layer: Layer::Top,
+        anchor: Anchor::TOP | Anchor::LEFT | Anchor::RIGHT,
+        exclusive_zone: 32,
+        namespace: "bar".into(),
+        keyboard_interactivity: KeyboardInteractivity::None,
+    });
+    let win = f
+        .app
+        .spawn_with(
+            root,
+            window().layout(LayoutStyle::default().column().size(auto(), px(32.0))),
+            (role,),
+        )
+        .id();
+    f.app.tick();
+    f.turn();
+    f.requests();
+    layer_configure(&mut f, 3);
+    f.requests();
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.request_layer_size(win, 0, 48, &mut wl);
+    }
+    f.turn();
+    set_mapped(&mut f, win, false);
+    f.requests();
+    set_mapped(&mut f, win, true);
+    let reqs = f.requests();
+    let shape: Vec<(u32, u16)> = reqs.iter().map(|r| (r.sender.0, r.opcode)).collect();
+    assert_eq!(
+        shape,
+        vec![
+            (XDG, op::LAYER_SET_ANCHOR),
+            (XDG, op::LAYER_SET_ZONE),
+            (XDG, op::LAYER_SET_KEYBOARD),
+            (XDG, op::LAYER_SET_SIZE),
+            (SURFACE, op::COMMIT),
+        ],
+        "the unmap reset the layer state, so the remap commit needs it again, with no attach"
+    );
+    assert_eq!(reqs[0].reader().uint(), Some(1 | 4 | 8));
+    assert_eq!(reqs[1].reader().int(), Some(32));
+    let mut r = reqs[3].reader();
+    assert_eq!((r.uint(), r.uint()), (Some(0), Some(48)));
+
+    layer_configure(&mut f, 4);
+    let reqs = f.requests();
+    let ack = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(XDG) && r.opcode == op::LAYER_ACK)
+        .expect("the fresh configure is acked");
+    let attach = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::ATTACH)
+        .expect("and the window draws");
+    assert!(ack < attach);
+}
+
+#[test]
+fn a_configure_in_flight_across_the_unmap_does_not_skip_the_remap_commit() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_mapped(&mut f, win, false);
+    // Sent before the compositor saw the null attach, delivered after it.
+    layer_configure(&mut f, 4);
+    f.requests();
+    set_mapped(&mut f, win, true);
+    f.app.tick();
+    f.turn();
+    let s = shape(&mut f);
+    assert_eq!(s, REMAP_SHAPE, "layer state then an empty commit, no attach");
+    assert!(!f.app.resource::<Surfaces>().is_configured(win));
+
+    layer_configure(&mut f, 5);
+    let reqs = f.requests();
+    let ack = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(XDG) && r.opcode == op::LAYER_ACK)
+        .expect("the fresh configure is acked");
+    assert_eq!(reqs[ack].reader().uint(), Some(5));
+    let attach = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::ATTACH)
+        .expect("the remap draws after the fresh configure");
+    assert!(ack < attach);
+}
+
+#[test]
+fn set_mapped_on_a_toplevel_does_nothing() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 320, 200);
+    f.requests();
+    set_mapped(&mut f, win, false);
+    set_mapped(&mut f, win, true);
+    assert!(shape(&mut f).is_empty());
+    assert!(f.app.resource::<Surfaces>().is_configured(win));
+}
+
+fn set_layer(f: &mut Fake, win: NodeId, layer: Layer) {
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.set_layer(win, layer, &mut wl);
+    }
+    f.turn();
+}
+
+#[test]
+fn set_layer_sends_the_layer_then_commits_without_unmapping() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_layer(&mut f, win, Layer::Background);
+    let reqs = f.requests();
+    let shape: Vec<(u32, u16)> = reqs.iter().map(|r| (r.sender.0, r.opcode)).collect();
+    assert_eq!(
+        shape,
+        vec![(XDG, op::LAYER_SET_LAYER), (SURFACE, op::COMMIT)],
+        "{reqs:?}"
+    );
+    assert_eq!(reqs[0].reader().uint(), Some(Layer::Background as u32));
+    assert!(!reqs.iter().any(|r| r.opcode == op::ATTACH));
+    let s = f.app.resource::<Surfaces>();
+    assert_eq!(s.layer_of(win), Some(Layer::Background));
+    assert!(s.is_mapped(win));
+    assert!(s.is_configured(win));
+}
+
+#[test]
+fn set_layer_to_the_current_layer_sends_nothing() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_layer(&mut f, win, Layer::Top);
+    assert!(shape(&mut f).is_empty());
+    set_layer(&mut f, win, Layer::Background);
+    f.requests();
+    set_layer(&mut f, win, Layer::Background);
+    assert!(shape(&mut f).is_empty());
+    set_layer(&mut f, win, Layer::Top);
+    let reqs = f.requests();
+    assert_eq!(reqs[0].opcode, op::LAYER_SET_LAYER);
+    assert_eq!(reqs[0].reader().uint(), Some(Layer::Top as u32));
+}
+
+#[test]
+fn set_layer_before_spawn_makes_the_layer_surface_start_there() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let root = f.app.root();
+    let win = f
+        .app
+        .spawn_with(
+            root,
+            window().layout(LayoutStyle::default().column()),
+            (layer_role(),),
+        )
+        .id();
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.set_layer(win, Layer::Background, &mut wl);
+    }
+    f.app.tick();
+    f.turn();
+    let reqs = f.requests();
+    let get = reqs
+        .iter()
+        .find(|r| r.sender == ObjectId(8) && r.opcode == op::GET_LAYER_SURFACE)
+        .expect("the layer surface is requested");
+    let mut r = get.reader();
+    r.object();
+    r.object();
+    r.object_opt();
+    assert_eq!(r.uint(), Some(Layer::Background as u32));
+    assert!(!reqs.iter().any(|r| r.opcode == op::LAYER_SET_LAYER));
+    assert_eq!(
+        f.app.resource::<Surfaces>().layer_of(win),
+        Some(Layer::Background)
+    );
+}
+
+#[test]
+fn set_layer_on_a_toplevel_does_nothing() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 320, 200);
+    f.requests();
+    set_layer(&mut f, win, Layer::Background);
+    assert!(shape(&mut f).is_empty());
+    assert_eq!(f.app.resource::<Surfaces>().layer_of(win), None);
+}
+
+fn set_input_region(f: &mut Fake, win: NodeId, region: Option<&[Rect]>) {
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.set_input_region(win, region, &mut wl);
+    }
+    f.turn();
+}
+
+#[test]
+fn empty_input_region_sends_an_empty_region() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_input_region(&mut f, win, Some(&[]));
+    let reqs = f.requests();
+    let create = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(COMPOSITOR) && r.opcode == op::CREATE_REGION)
+        .expect("a region is created");
+    let region = reqs[create].reader().object().expect("new region id");
+    assert!(
+        !reqs
+            .iter()
+            .any(|r| r.sender == region && r.opcode == op::REGION_ADD)
+    );
+    let set = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::SET_INPUT_REGION)
+        .expect("the region is set");
+    assert_eq!(reqs[set].reader().object(), Some(region));
+    let destroy = reqs
+        .iter()
+        .position(|r| r.sender == region && r.opcode == op::REGION_DESTROY)
+        .expect("the region is destroyed");
+    let commit = reqs
+        .iter()
+        .position(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::COMMIT)
+        .expect("the change is committed");
+    assert!(
+        create < set && set < destroy && destroy < commit,
+        "{reqs:?}"
+    );
+}
+
+#[test]
+fn input_region_rects_are_added() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_input_region(&mut f, win, Some(&[Rect::new(0., 0., 10.5, 20.)]));
+    let reqs = f.requests();
+    let region = reqs
+        .iter()
+        .find(|r| r.sender == ObjectId(COMPOSITOR) && r.opcode == op::CREATE_REGION)
+        .and_then(|r| r.reader().object())
+        .expect("a region is created");
+    let adds: Vec<_> = reqs
+        .iter()
+        .filter(|r| r.sender == region && r.opcode == op::REGION_ADD)
+        .collect();
+    assert_eq!(adds.len(), 1, "{reqs:?}");
+    let mut r = adds[0].reader();
+    assert_eq!(
+        (r.int(), r.int(), r.int(), r.int()),
+        (Some(0), Some(0), Some(11), Some(20))
+    );
+}
+
+#[test]
+fn none_resets_the_input_region() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_input_region(&mut f, win, None);
+    let reqs = f.requests();
+    let set = reqs
+        .iter()
+        .find(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::SET_INPUT_REGION)
+        .expect("the region is reset");
+    assert_eq!(set.reader().object(), Some(ObjectId(0)));
+    assert!(
+        reqs.iter()
+            .any(|r| r.sender == ObjectId(SURFACE) && r.opcode == op::COMMIT)
+    );
 }
 
 // ── the frame loop ─────────────────────────────────────────────────────
@@ -1401,4 +1826,30 @@ fn a_touch_down_and_up_over_a_leaf_fires_press_release_and_clicked() {
             format!("Clicked Some({leaf:?})"),
         ]
     );
+}
+
+#[test]
+fn showing_a_window_hidden_before_its_first_buffer_draws_without_a_new_configure() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let root = f.app.root();
+    let win = f
+        .app
+        .spawn_with(
+            root,
+            window().layout(LayoutStyle::default().column()),
+            (layer_role(),),
+        )
+        .id();
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.set_mapped(win, false, &mut wl);
+    }
+    f.app.tick();
+    f.turn();
+    layer_configure(&mut f, 3);
+    f.requests();
+    set_mapped(&mut f, win, true);
+    f.app.tick();
+    f.turn();
+    assert_eq!(attaches(&mut f), vec![LAYER_BUF_A]);
 }
