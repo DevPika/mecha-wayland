@@ -5,12 +5,19 @@
 pub mod button;
 pub mod color;
 pub mod font;
+pub mod slider;
 pub mod state;
 pub mod text;
 
-pub use button::{Button, ButtonBuilder, ButtonContextExt, ButtonOverrides, ButtonVariant, button};
+pub use button::{
+    Button, ButtonBuilder, ButtonContextExt, ButtonOverrides, ButtonSize, ButtonVariant, button,
+};
 pub use color::{ColorSource, IntoColorSource};
 pub use font::{FontBook, FontContextExt, IntoWeight};
+pub use slider::{
+    Slider, SliderBuilder, SliderChange, SliderContextExt, SliderOrientation, SliderSize,
+    SliderVariant, slider,
+};
 pub use state::StateLayer;
 pub use text::{Text, TextBuilder, TextContextExt, text};
 
@@ -28,7 +35,11 @@ pub use widgets::{
 pub mod prelude {
     // Themed widgets & builders
     pub use crate::button::{
-        Button, ButtonBuilder, ButtonContextExt, ButtonOverrides, ButtonVariant, button,
+        Button, ButtonBuilder, ButtonContextExt, ButtonOverrides, ButtonSize, ButtonVariant, button,
+    };
+    pub use crate::slider::{
+        Slider, SliderBuilder, SliderChange, SliderContextExt, SliderOrientation, SliderSize,
+        SliderVariant, slider,
     };
     pub use crate::text::{Text, TextBuilder, TextContextExt, text};
 
