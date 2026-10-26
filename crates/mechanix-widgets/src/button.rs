@@ -4,7 +4,7 @@ use crate::text::{Text, TextContextExt, text};
 use app::{Build, Context, Handle, Spawner, Widget};
 use atlas::SpriteId;
 use geometry::{Color, Corners, Insets};
-use layout::{LayoutStyle, Val, px};
+use layout::{LayoutStyle, StyleContext, Val, px};
 use std::ops::Deref;
 use theme::{ColorRole, Shape, Spacing, SpawnerThemeExt, TextVariant, ThemeReader};
 use widgets::{
@@ -408,6 +408,7 @@ pub struct ButtonBuilder {
     pub style: Option<LayoutStyle>,
     pub width: Option<Val>,
     pub height: Option<Val>,
+    pub icon_gap: Option<Val>,
 }
 
 impl Deref for ButtonBuilder {
@@ -437,6 +438,7 @@ impl ButtonBuilder {
             style: None,
             width: None,
             height: None,
+            icon_gap: None,
         }
     }
 
@@ -622,6 +624,12 @@ impl ButtonBuilder {
         self
     }
 
+    /// Space between the icon and the label. `None` uses the size's default gap.
+    pub fn icon_gap(mut self, gap: impl Into<Option<Val>>) -> Self {
+        self.icon_gap = gap.into();
+        self
+    }
+
     /// Resolves theme colors, state layers, and shapes for the button.
     pub fn resolve_props(&self, reader: &impl ThemeReader) -> (NativeButtonProps, Color, Color) {
         let (mut props, fg, disabled_fg) =
@@ -642,6 +650,7 @@ pub struct Button {
     pub(crate) variant: ButtonVariant,
     pub(crate) size: ButtonSize,
     pub(crate) overrides: ButtonOverrides,
+    pub(crate) icon_gap: Option<Val>,
     pub(crate) fg: Color,
     pub(crate) native: Handle<NativeButton>,
     pub(crate) label_handle: Option<Handle<Text>>,
@@ -676,6 +685,11 @@ impl Button {
     #[inline]
     pub fn overrides(&self) -> &ButtonOverrides {
         &self.overrides
+    }
+
+    #[inline]
+    pub fn icon_gap(&self) -> Option<Val> {
+        self.icon_gap
     }
 
     #[inline]
@@ -722,6 +736,9 @@ impl Widget for Button {
         if let Some(h) = b.height {
             button_style = button_style.height(h);
         }
+        if let Some(g) = b.icon_gap {
+            button_style = button_style.column_gap(g);
+        }
 
         let native = s.spawn(
             me,
@@ -752,6 +769,7 @@ impl Widget for Button {
             variant: b.variant,
             size: b.size,
             overrides: b.overrides,
+            icon_gap: b.icon_gap,
             fg,
             native,
             label_handle,
@@ -825,6 +843,7 @@ pub trait ButtonContextExt {
     fn set_border_widths(&mut self, widths: impl Into<Option<Insets<f32>>>);
     fn set_radius(&mut self, radius: impl Into<Option<Corners<f32>>>);
     fn set_shape(&mut self, shape: impl Into<Option<Shape>>);
+    fn set_icon_gap(&mut self, gap: impl Into<Option<Val>>);
 
     fn set_hover_style(&mut self, style: impl Into<Option<NativeButtonStateStyle>>);
     fn set_pressed_style(&mut self, style: impl Into<Option<NativeButtonStateStyle>>);
@@ -962,6 +981,18 @@ impl ButtonContextExt for Context<'_, Button> {
         }
         self.me().overrides.radius = r;
         sync_visuals(self);
+    }
+
+    fn set_icon_gap(&mut self, gap: impl Into<Option<Val>>) {
+        let g = gap.into();
+        if self.me().icon_gap == g {
+            return;
+        }
+        self.me().icon_gap = g;
+        let (native, size) = (self.me().native, self.me().size);
+        if let Some(mut native_ctx) = self.at(native) {
+            native_ctx.set_column_gap(g.unwrap_or(size.gap()));
+        }
     }
 
     fn set_hover_style(&mut self, style: impl Into<Option<NativeButtonStateStyle>>) {
@@ -1305,6 +1336,14 @@ mod tests {
     }
 
     #[test]
+    fn builder_icon_gap() {
+        assert_eq!(button().icon_gap, None);
+        let b = button().icon_gap(px(12.0));
+        assert_eq!(b.icon_gap, Some(px(12.0)));
+        assert_eq!(b.icon_gap(None).icon_gap, None);
+    }
+
+    #[test]
     fn context_focused_and_icon() {
         use app::App;
         use atlas::Atlas;
@@ -1382,5 +1421,84 @@ mod tests {
 
         let btn = app.widget::<Button>(btn_h).unwrap();
         assert_eq!(btn.props.state, WidgetState::Focused);
+    }
+
+    #[test]
+    fn icon_and_label_are_centered_on_both_axes() {
+        use app::App;
+        use atlas::Atlas;
+        use layout::{Align, ComputedLayout, LayoutModule, LayoutRoot};
+        use paint::PaintModule;
+        use theme::prelude::*;
+
+        let mut app = App::new();
+        app.add_module(MechanixTheme::dark());
+        app.add_module(LayoutModule);
+        app.add_module(PaintModule);
+
+        let mut atlas = Atlas::new();
+        let font_id = atlas
+            .add_font(include_bytes!(
+                "../../../crates/atlas/tests/fixtures/Inter-Regular.ttf"
+            ))
+            .unwrap();
+        let sprite = atlas
+            .insert(
+                atlas::Class::Icon,
+                &atlas::Bitmap {
+                    width: 8,
+                    height: 8,
+                    format: atlas::Format::R8,
+                    pixels: vec![255; 64],
+                },
+            )
+            .unwrap();
+        app.insert_resource(atlas);
+        app.insert_resource(crate::font::FontBook::new(font_id));
+
+        struct Window;
+        impl Build for Window {
+            type Widget = Window;
+        }
+        impl Widget for Window {
+            type Builder = Window;
+            fn build(b: Window, _: Handle<Self>, _: &mut Spawner<'_, Self>) -> Self {
+                b
+            }
+        }
+
+        let window = app.spawn_with(
+            app.root(),
+            Window,
+            (
+                LayoutRoot(true),
+                LayoutStyle::default()
+                    .size(px(800.0), px(600.0))
+                    .align_items(Align::Start),
+            ),
+        );
+        let btn_h = app.spawn(
+            window,
+            button()
+                .label("Save")
+                .icon(sprite)
+                .width(px(200.0))
+                .height(px(80.0)),
+        );
+        app.tick();
+
+        let btn = app.widget::<Button>(btn_h).unwrap();
+        let rect = |id: app::NodeId| app.component::<ComputedLayout>(id).unwrap().rect;
+        let outer = rect(btn.native().id());
+        let icon = rect(btn.icon().unwrap().id());
+        let label = rect(btn.label().unwrap().id());
+
+        let mid_y = |r: geometry::Rect| r.origin.y + r.size.height / 2.0;
+        let outer_mid_x = outer.origin.x + outer.size.width / 2.0;
+        let content_mid_x = (icon.origin.x + label.origin.x + label.size.width) / 2.0;
+
+        assert!((mid_y(icon) - mid_y(outer)).abs() <= 1.0);
+        assert!((mid_y(label) - mid_y(outer)).abs() <= 1.0);
+        assert!((content_mid_x - outer_mid_x).abs() <= 1.0);
     }
 }
