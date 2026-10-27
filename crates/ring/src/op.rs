@@ -139,6 +139,22 @@ impl Op {
             result: None,
         })
     }
+    /// A one-shot readiness poll. Its result is a readiness bitmask.
+    pub(crate) fn poll(events: u32) -> Box<Op> {
+        // SAFETY: all-zero is valid for iovec and msghdr.
+        // Neither structure is used by this operation.
+        Box::new(Op {
+            kind: Kind::Poll { events },
+            buf: Vec::new(),     // empty vector, never populated, same as timeout
+            fds: Vec::new(),     // empty vector, never populated, same as timeout
+            raw_fds: Vec::new(), // empty vector, never populated, same as timeout
+            iov: unsafe { mem::zeroed() }, // empty, never populated, same as timeout
+            msg: unsafe { mem::zeroed() }, // empty, never populated, same as timeout
+            cmsg: Vec::new(),    // empty vector, never populated, same as timeout
+            ts: types::Timespec::new(),
+            result: None,
+        })
+    }
 
     /// The submission entry. Valid while this box lives, which is until
     /// `complete`.
