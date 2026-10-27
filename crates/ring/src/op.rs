@@ -17,6 +17,8 @@ pub(crate) enum Kind {
     Recv,
     Send,
     Timeout,
+    Poll { events: u32 },
+    // store in the variant because each poll can watch for different things
 }
 
 pub(crate) struct Op {
@@ -154,6 +156,7 @@ impl Op {
                 .flags(libc::MSG_NOSIGNAL as u32)
                 .build(),
             Kind::Timeout => opcode::Timeout::new(&self.ts).build(),
+            Kind::Poll { events } => opcode::PollAdd::new(types::Fd(fd), events).build(),
         }
     }
 
