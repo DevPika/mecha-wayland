@@ -17,8 +17,10 @@ pub(crate) enum Kind {
     Recv,
     Send,
     Timeout,
-    Poll { events: u32 },
-    // store in the variant because each poll can watch for different things
+    /// Readiness interests belong only to poll operations.
+    Poll {
+        events: u32,
+    },
 }
 
 pub(crate) struct Op {
@@ -139,18 +141,19 @@ impl Op {
             result: None,
         })
     }
-    /// A one-shot readiness poll. Its result is a readiness bitmask.
+
+    /// A one-shot readiness poll. Successful completions carry readiness flags.
     pub(crate) fn poll(events: u32) -> Box<Op> {
         // SAFETY: all-zero is valid for iovec and msghdr.
         // Neither structure is used by this operation.
         Box::new(Op {
             kind: Kind::Poll { events },
-            buf: Vec::new(),     // empty vector, never populated, same as timeout
-            fds: Vec::new(),     // empty vector, never populated, same as timeout
-            raw_fds: Vec::new(), // empty vector, never populated, same as timeout
-            iov: unsafe { mem::zeroed() }, // empty, never populated, same as timeout
-            msg: unsafe { mem::zeroed() }, // empty, never populated, same as timeout
-            cmsg: Vec::new(),    // empty vector, never populated, same as timeout
+            buf: Vec::new(),
+            fds: Vec::new(),
+            raw_fds: Vec::new(),
+            iov: unsafe { mem::zeroed() },
+            msg: unsafe { mem::zeroed() },
+            cmsg: Vec::new(),
             ts: types::Timespec::new(),
             result: None,
         })

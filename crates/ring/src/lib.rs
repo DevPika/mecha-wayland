@@ -4,8 +4,8 @@
 //! # Model
 //!
 //! - [`Ring`] is a resource over one io_uring. A module submits a typed
-//!   op, [`Ring::recvmsg`], [`Ring::sendmsg`] or [`Ring::timeout`], and
-//!   gets a [`Token`].
+//!   op, [`Ring::recvmsg`], [`Ring::sendmsg`], [`Ring::timeout`] or
+//!   [`Ring::poll`], and gets a [`Token`].
 //!   The ring owns the op's buffers until [`Ring::finish`] gives them
 //!   back as a [`Completed`]; the submitter keeps the fd open until then.
 //! - Every completion is one [`IoEvent`] signal. The module that owns
@@ -73,8 +73,8 @@ impl Token {
     }
 }
 
-/// One completion. `result` is the raw io_uring result: bytes moved, or
-/// a negative errno.
+/// One completion. `result` is the raw io_uring result: bytes moved,
+/// readiness flags for a poll, or a negative errno.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct IoEvent {
     pub token: Token,
@@ -148,6 +148,17 @@ impl Ring {
     /// it.
     pub fn timeout(&mut self, after: Duration) -> Token {
         self.submit_raw(-1, Op::timeout(after))
+    }
+
+    /// Watch `fd` once for readiness matching the `poll(2)` mask `events`.
+    ///
+    /// The matching [`IoEvent`]'s `result` contains readiness flags on success
+    /// or a negative errno on failure. [`Ring::finish`] returns empty buffers.
+    ///
+    /// No bytes are read or written. Keep `fd` open until the operation is
+    /// finished; submit another poll to watch for readiness again.
+    pub fn poll(&mut self, fd: BorrowedFd<'_>, events: u32) -> Token {
+        self.submit(fd, Op::poll(events))
     }
 
     fn submit(&mut self, fd: BorrowedFd<'_>, op: Box<Op>) -> Token {
