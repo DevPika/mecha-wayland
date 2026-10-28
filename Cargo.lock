@@ -395,6 +395,7 @@ dependencies = [
  "gles",
  "interactivity",
  "layout",
+ "libc",
  "mechanix-widgets",
  "paint",
  "presentation",

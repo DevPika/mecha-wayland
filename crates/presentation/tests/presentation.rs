@@ -862,7 +862,10 @@ fn a_configure_in_flight_across_the_unmap_does_not_skip_the_remap_commit() {
     f.app.tick();
     f.turn();
     let s = shape(&mut f);
-    assert_eq!(s, REMAP_SHAPE, "layer state then an empty commit, no attach");
+    assert_eq!(
+        s, REMAP_SHAPE,
+        "layer state then an empty commit, no attach"
+    );
     assert!(!f.app.resource::<Surfaces>().is_configured(win));
 
     layer_configure(&mut f, 5);
