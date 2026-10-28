@@ -37,13 +37,6 @@ impl Widget for DemoView {
                 .color(ColorRole::OnSurface),
         );
 
-        s.spawn(
-            me,
-            text("Tick thickness: 2px | Spacing: 4px | Default: OnSecondaryFixed / SecondaryFixedDim")
-                .variant(TextVariant::BodyMedium)
-                .color(ColorRole::OnSurfaceVariant),
-        );
-
         // Section 1: Horizontal Sliders (Different Sizes)
         let h_section = s.spawn(
             me,

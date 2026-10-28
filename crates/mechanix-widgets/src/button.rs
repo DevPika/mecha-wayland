@@ -3,7 +3,7 @@ use crate::state::{StateLayer, WidgetState};
 use crate::text::{Text, TextContextExt, text};
 use app::{Build, Context, Handle, Spawner, Widget};
 use atlas::SpriteId;
-use geometry::{Color, Corners, Insets};
+use geometry::{Color, Corners, Insets, Size};
 use layout::{LayoutStyle, StyleContext, Val, px};
 use std::ops::Deref;
 use theme::{ColorRole, Shape, Spacing, SpawnerThemeExt, TextVariant, ThemeReader};
@@ -409,6 +409,7 @@ pub struct ButtonBuilder {
     pub width: Option<Val>,
     pub height: Option<Val>,
     pub icon_gap: Option<Val>,
+    pub padding: Option<Insets<Val>>,
 }
 
 impl Deref for ButtonBuilder {
@@ -439,6 +440,7 @@ impl ButtonBuilder {
             width: None,
             height: None,
             icon_gap: None,
+            padding: None,
         }
     }
 
@@ -630,6 +632,12 @@ impl ButtonBuilder {
         self
     }
 
+    /// Overrides the button's padding. `None` uses the size's default padding.
+    pub fn padding(mut self, padding: impl Into<Option<Insets<Val>>>) -> Self {
+        self.padding = padding.into();
+        self
+    }
+
     /// Resolves theme colors, state layers, and shapes for the button.
     pub fn resolve_props(&self, reader: &impl ThemeReader) -> (NativeButtonProps, Color, Color) {
         let (mut props, fg, disabled_fg) =
@@ -651,6 +659,7 @@ pub struct Button {
     pub(crate) size: ButtonSize,
     pub(crate) overrides: ButtonOverrides,
     pub(crate) icon_gap: Option<Val>,
+    pub(crate) padding: Option<Insets<Val>>,
     pub(crate) fg: Color,
     pub(crate) native: Handle<NativeButton>,
     pub(crate) label_handle: Option<Handle<Text>>,
@@ -690,6 +699,11 @@ impl Button {
     #[inline]
     pub fn icon_gap(&self) -> Option<Val> {
         self.icon_gap
+    }
+
+    #[inline]
+    pub fn padding(&self) -> Option<Insets<Val>> {
+        self.padding
     }
 
     #[inline]
@@ -739,6 +753,9 @@ impl Widget for Button {
         if let Some(g) = b.icon_gap {
             button_style = button_style.column_gap(g);
         }
+        if let Some(p) = b.padding {
+            button_style = button_style.padding(p);
+        }
 
         let native = s.spawn(
             me,
@@ -746,11 +763,13 @@ impl Widget for Button {
         );
 
         let icon_handle = b.icon.map(|sprite| {
-            let icon_px = px(b.size.icon_size());
+            let icon_size = b.size.icon_size();
+            let icon_px = px(icon_size);
             s.spawn(
                 native,
                 widgets::icon(sprite)
                     .color(effective_fg)
+                    .size(Size::new(icon_size, icon_size))
                     .style(LayoutStyle::default().size(icon_px, icon_px)),
             )
         });
@@ -770,6 +789,7 @@ impl Widget for Button {
             size: b.size,
             overrides: b.overrides,
             icon_gap: b.icon_gap,
+            padding: b.padding,
             fg,
             native,
             label_handle,
@@ -821,6 +841,10 @@ fn sync_visuals(ctx: &mut Context<'_, Button>) {
     if let Some(icn) = icon_h
         && let Some(mut icn_ctx) = ctx.at(icn)
     {
+        let icon_size = size.icon_size();
+        let icon_px = px(icon_size);
+        icn_ctx.set_size(Size::new(icon_size, icon_size));
+        icn_ctx.set_style(LayoutStyle::default().size(icon_px, icon_px));
         icn_ctx.set_color(effective_fg);
     }
 }
@@ -844,6 +868,7 @@ pub trait ButtonContextExt {
     fn set_radius(&mut self, radius: impl Into<Option<Corners<f32>>>);
     fn set_shape(&mut self, shape: impl Into<Option<Shape>>);
     fn set_icon_gap(&mut self, gap: impl Into<Option<Val>>);
+    fn set_padding(&mut self, padding: impl Into<Option<Insets<Val>>>);
 
     fn set_hover_style(&mut self, style: impl Into<Option<NativeButtonStateStyle>>);
     fn set_pressed_style(&mut self, style: impl Into<Option<NativeButtonStateStyle>>);
@@ -992,6 +1017,18 @@ impl ButtonContextExt for Context<'_, Button> {
         let (native, size) = (self.me().native, self.me().size);
         if let Some(mut native_ctx) = self.at(native) {
             native_ctx.set_column_gap(g.unwrap_or(size.gap()));
+        }
+    }
+
+    fn set_padding(&mut self, padding: impl Into<Option<Insets<Val>>>) {
+        let p = padding.into();
+        if self.me().padding == p {
+            return;
+        }
+        self.me().padding = p;
+        let (native, size) = (self.me().native, self.me().size);
+        if let Some(mut native_ctx) = self.at(native) {
+            native_ctx.set_padding(p.unwrap_or(size.padding()));
         }
     }
 
@@ -1500,5 +1537,11 @@ mod tests {
         assert!((mid_y(icon) - mid_y(outer)).abs() <= 1.0);
         assert!((mid_y(label) - mid_y(outer)).abs() <= 1.0);
         assert!((content_mid_x - outer_mid_x).abs() <= 1.0);
+
+        // The sprite must paint at the laid-out size, not its natural size,
+        // or it spills past the icon box and looks off-center.
+        let icon_widget = app.widget::<Icon>(btn.icon().unwrap()).unwrap();
+        assert_eq!(icon_widget.size().width, icon.size.width);
+        assert_eq!(icon_widget.size().height, icon.size.height);
     }
 }
