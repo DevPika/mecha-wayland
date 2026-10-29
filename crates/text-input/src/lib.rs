@@ -22,10 +22,12 @@
 //!   `InputFocus { focused: true }` at itself, which this crate's
 //!   `Emitted<InputFocus>` system turns into a committed `enable`
 //!   carrying the widget's text as the surrounding text. A `Press` that
-//!   misses the focused widget — by a cheap id check against the press
-//!   targets, no per-press tree walk — blurs it with a committed
-//!   `disable`. The surface focus the `Enter`/`Leave` events carry is
-//!   the compositor's business: a `Leave` only resets (the compositor
+//!   misses the focused widget in the focused widget's own window — by a
+//!   cheap id check against the press targets, no per-press tree walk —
+//!   blurs it with a committed `disable`; a press in another of the
+//!   app's windows (an OSK, a panel) leaves the focus alone. The
+//!   surface focus the `Enter`/`Leave` events carry is the
+//!   compositor's business: a `Leave` only resets (the compositor
 //!   ignores our requests until the next `Enter` anyway) — and, not
 //!   being double-buffered, clears the widget's preedit immediately —
 //!   and that `Enter` re-enables for whichever widget is still focused.
@@ -87,6 +89,7 @@ use app::prelude::*;
 use interactivity::{KeyboardFocus, Press};
 use wayland::prelude::*;
 use widgets::{ContentHint, ContentPurpose, Input, InputEdit, InputFocus};
+use window::InWindow;
 
 pub mod prelude {
     pub use crate::{TextInput, TextInputModule};
@@ -269,11 +272,22 @@ fn cap(text: &str, cursor: usize) -> (String, usize) {
 /// own `Press` handler emitting `InputFocus { focused: true }`; this
 /// system only handles the converse, and by a cheap id check against the
 /// press targets — no per-press tree walk for an `Input`.
+///
+/// Only a press in the focused widget's own window counts. A press in
+/// another of the app's windows — an on-screen keyboard or a panel
+/// whose layer surface takes no keyboard focus — leaves the text focus
+/// where it is: whether that surface takes the keyboard is the
+/// compositor's call, reported as a `Leave`.
 fn on_press(app: &mut App, e: &Emitted<Press>) {
     let Some(focused) = app.resource::<TextInput>().focused else {
         return;
     };
-    if !e.targets.iter().any(|&id| id == focused) {
+    if e.targets.iter().any(|&id| id == focused) {
+        return;
+    }
+    let window_of = |id| app.component::<InWindow>(id).and_then(|w| w.0);
+    let pressed = e.targets.first().and_then(|&id| window_of(id));
+    if pressed.is_some() && pressed == window_of(focused) {
         app.emit(InputFocus { focused: false }, focused);
     }
 }
