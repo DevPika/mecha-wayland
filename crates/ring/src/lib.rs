@@ -161,6 +161,10 @@ impl Ring {
         self.submit(fd, Op::poll(events))
     }
 
+    pub fn cancel(&mut self, target: Token) -> Token {
+        self.submit_raw(-1, Op::cancel(target.0))
+    }
+
     fn submit(&mut self, fd: BorrowedFd<'_>, op: Box<Op>) -> Token {
         self.submit_raw(fd.as_raw_fd(), op)
     }

@@ -21,6 +21,10 @@ pub(crate) enum Kind {
     Poll {
         events: u32,
     },
+    /// target is the userdata of the call we want to cancel
+    AsyncCancel {
+        target: u64,
+    },
 }
 
 pub(crate) struct Op {
@@ -159,6 +163,20 @@ impl Op {
         })
     }
 
+    pub(crate) fn cancel(target: u64) -> Box<Op> {
+        Box::new(Op {
+            kind: Kind::AsyncCancel { target },
+            buf: Vec::new(),
+            fds: Vec::new(),
+            raw_fds: Vec::new(),
+            iov: unsafe { mem::zeroed() },
+            msg: unsafe { mem::zeroed() },
+            cmsg: Vec::new(),
+            ts: types::Timespec::new(),
+            result: None,
+        })
+    }
+
     /// The submission entry. Valid while this box lives, which is until
     /// `complete`.
     ///
@@ -176,6 +194,7 @@ impl Op {
                 .build(),
             Kind::Timeout => opcode::Timeout::new(&self.ts).build(),
             Kind::Poll { events } => opcode::PollAdd::new(types::Fd(fd), events).build(),
+            Kind::AsyncCancel { target } => opcode::AsyncCancel::new(target).build(),
         }
     }
 
