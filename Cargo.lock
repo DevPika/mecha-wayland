@@ -402,6 +402,7 @@ dependencies = [
  "ring",
  "text-input",
  "theme",
+ "timer",
  "wayland",
  "widgets",
  "window",

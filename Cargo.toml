@@ -18,6 +18,7 @@ paint.workspace = true
 presentation.workspace = true
 render.workspace = true
 ring.workspace = true
+timer.workspace = true
 wayland.workspace = true
 widgets.workspace = true
 window.workspace = true
