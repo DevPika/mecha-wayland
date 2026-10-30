@@ -1,6 +1,9 @@
 mod common;
 
-use atlas::{Atlas, AtlasId, AtlasTile, Bitmap, Class, Format};
+use std::os::fd::OwnedFd;
+use std::sync::Arc;
+
+use atlas::{Atlas, AtlasId, AtlasTile, Bitmap, Class, External, Format, Plane};
 use common::{device, near, pixel, png, rgb};
 use geometry::{Color, Corners, Insets, Rect, Size};
 use gles::{Budget, Device};
@@ -259,6 +262,7 @@ fn a_page_past_the_budget_panics_with_the_class_named() {
         .or_else(|| msg.downcast_ref::<&str>().map(|s| s.to_string()))
         .unwrap_or_default();
     assert!(msg.contains("color atlas budget of 1"), "{msg}");
+    assert!(msg.contains("glyph,"), "the page counts by class: {msg}");
 }
 
 #[test]
@@ -334,4 +338,108 @@ fn a_transparent_edge_has_no_dark_fringe() {
         );
     }
     assert!(seen >= 2, "the ramp had fewer than two partial pixels");
+}
+
+const SQUARE: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><rect width="32" height="32" fill="black"/></svg>"#;
+
+#[test]
+fn many_rescales_never_exhaust_the_table() {
+    let Some((_g, mut d)) = device() else { return };
+    let mut atlas = Atlas::new();
+    let inter = atlas.add_font(INTER).unwrap();
+    let (font, id) = atlas.lookup(&[inter], 'a').unwrap();
+    atlas.glyph(font, id, 14);
+    atlas.insert_svg(SQUARE, 16).unwrap();
+    d.upload(&atlas);
+    for _ in 0..100 {
+        atlas.set_scale(1.0);
+        atlas.set_scale(2.0);
+        d.upload(&atlas);
+    }
+}
+
+#[test]
+#[should_panic(expected = "(dmabuf import) is not implemented")]
+fn an_external_hits_todo() {
+    let Some((_g, mut d)) = device() else {
+        // No device: satisfy should_panic.
+        panic!("(dmabuf import) is not implemented (skipped)");
+    };
+    let mut atlas = Atlas::new();
+    let fd = Arc::new(OwnedFd::from(std::fs::File::open("/dev/null").unwrap()));
+    atlas.external(External {
+        size: Size::new(16.0, 16.0),
+        fourcc: 0x3231564e,
+        modifier: 0,
+        planes: vec![Plane {
+            fd,
+            offset: 0,
+            stride: 16,
+        }],
+        generation: 0,
+    });
+    d.upload(&atlas);
+}
+
+#[test]
+fn an_icon_sprite_draws_through_its_mips() {
+    let Some((_g, mut d)) = device() else { return };
+    let mut atlas = Atlas::new();
+    let id = atlas.insert_svg(SQUARE, 32).unwrap();
+    let tile = atlas.sprite(id).tile;
+    d.upload(&atlas);
+    let red = Color::rgb(1.0, 0.0, 0.0);
+    let mut q = queue(48.0, 32.0, Color::BLACK);
+    q.translucent = Pass {
+        scissor: q.scissor.clone(),
+        commands: vec![
+            sprite(Rect::new(0.0, 0.0, 32.0, 32.0), tile, red, None),
+            sprite(Rect::new(32.0, 0.0, 16.0, 16.0), tile, red, None),
+        ],
+    };
+    let px = draw_one(&mut d, 48, 32, &q, "an_icon_sprite_draws_through_its_mips");
+    assert!(near(pixel(&px, 48, 16, 16), rgb(1.0, 0.0, 0.0), 3), "full size");
+    assert!(near(pixel(&px, 48, 40, 8), rgb(1.0, 0.0, 0.0), 3), "half size");
+}
+
+#[test]
+fn at_scale_two_a_glyph_lands_one_to_one() {
+    let Some((_g, mut d)) = device() else { return };
+    let mut atlas = Atlas::new();
+    let inter = atlas.add_font(INTER).unwrap();
+    atlas.set_scale(2.0);
+    let (font, id) = atlas.lookup(&[inter], 'H').unwrap();
+    let g = atlas.glyph(font, id, 14);
+    d.upload(&atlas);
+    // As render would: the logical rect scaled by 2.
+    let (w, h) = ((g.size.width * 2.0).round(), (g.size.height * 2.0).round());
+    assert_eq!((w as u32, h as u32), (g.physical_width, g.physical_height));
+    let (w, h) = (w as u32, h as u32);
+    let mut q = queue(32.0, 32.0, Color::BLACK);
+    q.scale = 2.0;
+    q.translucent = Pass {
+        scissor: q.scissor.clone(),
+        commands: vec![sprite(
+            Rect::new(4.0, 4.0, w as f32, h as f32),
+            g.tile,
+            Color::WHITE,
+            None,
+        )],
+    };
+    let px = draw_one(&mut d, 32, 32, &q, "at_scale_two_a_glyph_lands_one_to_one");
+    let page = atlas.page(g.tile.atlas).unwrap();
+    let (bx, by) = (g.tile.bounds.origin.x as u32, g.tile.bounds.origin.y as u32);
+    let mut ink = 0;
+    for j in 0..h {
+        for i in 0..w {
+            let cov = page.level(0)[((by + j) * atlas::PAGE + bx + i) as usize];
+            ink += (cov > 128) as u32;
+            let p = pixel(&px, 32, 4 + i, 4 + j);
+            assert!(
+                near(p, [cov, cov, cov, 255], 2),
+                "({i}, {j}): drawn {p:?} vs coverage {cov}"
+            );
+        }
+    }
+    assert!(ink > 10, "the H has ink");
 }
