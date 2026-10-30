@@ -36,6 +36,8 @@ impl Module for TimerModule {
             "TimerModule installs after RingModule"
         );
         app.insert_resource(Timers::default());
-        app.system(systems::submit).system(systems::complete);
+        app.system(systems::submit)
+            .system(systems::complete)
+            .system(systems::removed);
     }
 }

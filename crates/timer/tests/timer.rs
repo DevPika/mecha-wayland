@@ -55,6 +55,8 @@ enum Setup {
     AddTimeout(Duration),
     Two(Duration, Duration),
     Interval(Duration),
+    /// An interval whose handler removes the probe on its first fire.
+    IntervalThenRemove(Duration),
 }
 
 /// What a `Poke` asks the probe's handler to do through `Context`.
@@ -96,6 +98,11 @@ impl Widget for Probe {
             Setup::AddTimeout(d) => vec![s.add_timeout(d, log)],
             Setup::Two(a, b) => vec![s.set_timeout(a, log), s.set_timeout(b, log)],
             Setup::Interval(d) => vec![s.set_interval(d, log)],
+            Setup::IntervalThenRemove(d) => vec![s.set_interval(d, |ctx, e| {
+                log(ctx, e);
+                let me = ctx.handle();
+                ctx.remove(me);
+            })],
         };
         s.resource_mut::<Ids>().0.extend(ids.iter().copied());
         s.on::<Poke>(me, |ctx, p| {
@@ -132,6 +139,18 @@ impl Widget for Probe {
 fn probe(app: &mut App, setup: Setup) -> Handle<Probe> {
     let root = app.root();
     app.spawn(root, ProbeBuilder(setup))
+}
+
+fn probe_under(app: &mut App, parent: Handle<Probe>, setup: Setup) -> Handle<Probe> {
+    app.spawn(parent, ProbeBuilder(setup))
+}
+
+/// A parent probe with no running timer and an interval child under it;
+/// returns the parent and the child's timer.
+fn parent_and_interval(app: &mut App, every: Duration) -> (Handle<Probe>, TimerId) {
+    let parent = probe(app, Setup::AddTimeout(Duration::from_secs(1)));
+    probe_under(app, parent, Setup::Interval(every));
+    (parent, *ids(app).last().unwrap())
 }
 
 fn poke(app: &mut App, at: Handle<Probe>, cmd: Cmd) {
@@ -360,4 +379,48 @@ fn unknown_id_is_noop() {
     );
     app.flush();
     assert_eq!(app.resource::<Results>().0, vec![false; 4]);
+}
+
+#[test]
+fn removed_node_silences_timers() {
+    let mut app = app();
+    let (parent, id) = parent_and_interval(&mut app, Duration::from_millis(20));
+    run_for(&mut app, Duration::from_millis(50));
+    assert!(!fires(&app).is_empty(), "the interval ran before removal");
+    app.remove(parent);
+    app.flush();
+    let removed_at = Instant::now();
+    run_for(&mut app, Duration::from_millis(100));
+    assert!(
+        fires(&app).iter().all(|f| f.1 < removed_at),
+        "nothing fires after removal"
+    );
+    assert!(
+        !app.resource::<Timers>().is_running(id),
+        "the timer is gone"
+    );
+}
+
+#[test]
+fn handler_removing_own_node_stops_interval() {
+    let mut app = app();
+    probe(
+        &mut app,
+        Setup::IntervalThenRemove(Duration::from_millis(20)),
+    );
+    run_for(&mut app, Duration::from_millis(120));
+    assert_eq!(fires(&app).len(), 1);
+    assert!(!app.resource::<Timers>().is_running(ids(&app)[0]));
+    assert_eq!(app.resource::<Timers>().in_flight(), 0, "nothing re-armed");
+}
+
+#[test]
+fn stale_tokens_drain() {
+    let mut app = app();
+    let (parent, _) = parent_and_interval(&mut app, Duration::from_millis(20));
+    run_for(&mut app, Duration::from_millis(30));
+    app.remove(parent);
+    app.flush();
+    run_for(&mut app, Duration::from_millis(200));
+    assert_eq!(app.resource::<Timers>().in_flight(), 0);
 }

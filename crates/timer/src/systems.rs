@@ -1,6 +1,7 @@
 //! The systems that move data between [`Timers`], the [`Ring`] and the
 //! app. Each borrows one resource at a time.
 
+use std::collections::HashSet;
 use std::time::Instant;
 
 use app::prelude::*;
@@ -41,6 +42,29 @@ pub(crate) fn complete(app: &mut App, e: &IoEvent) {
         .resource_mut::<Timers>()
         .complete(e.token, Instant::now());
     if let Some((owner, id)) = fired {
-        app.emit(Timeout { id }, owner);
+        // Removed later in the same flush that queued the `Removed`
+        // still to come: sweep now rather than re-arm for a dead node.
+        if app.is_live(owner) {
+            app.emit(Timeout { id }, owner);
+        } else {
+            sweep(app);
+        }
     }
+}
+
+/// A subtree went: its timers go with it. `Removed` names only the
+/// subtree's root, so sweep every timer by its owner's liveness.
+pub(crate) fn removed(app: &mut App, _: &Removed) {
+    sweep(app);
+}
+
+fn sweep(app: &mut App) {
+    let live: HashSet<NodeId> = app
+        .resource::<Timers>()
+        .owners()
+        .into_iter()
+        .filter(|&owner| app.is_live(owner))
+        .collect();
+    app.resource_mut::<Timers>()
+        .retain_live(|owner| live.contains(&owner));
 }

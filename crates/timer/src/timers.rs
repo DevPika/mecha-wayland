@@ -141,6 +141,17 @@ impl Timers {
         }
     }
 
+    /// Drop every timer whose owner is not `live`. Their ops in flight
+    /// go stale and are dropped when they complete.
+    pub(crate) fn retain_live(&mut self, live: impl Fn(NodeId) -> bool) {
+        self.timers.retain(|_, e| live(e.owner));
+    }
+
+    /// Every timer's owner, for a liveness sweep.
+    pub(crate) fn owners(&self) -> Vec<NodeId> {
+        self.timers.values().map(|e| e.owner).collect()
+    }
+
     pub(crate) fn owns(&self, token: Token) -> bool {
         self.tokens.contains_key(&token)
     }
