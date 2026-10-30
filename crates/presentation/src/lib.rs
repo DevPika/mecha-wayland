@@ -30,6 +30,11 @@
 //!   replaces the slots and kicks.
 //! - The atlas is uploaded on `OnChanged<Atlas>`, which the core queues
 //!   at `PostTick` ahead of any frame request the same tick raises.
+//! - A rescale rebuilds the atlas, and every tile a displayed paint holds
+//!   is then stale until the widgets' `Rescaled` paint has been copied to
+//!   `AnimatedPaint` at the next `PostTick`. No frame draws in between:
+//!   one that comes declines and wants again, and the windows are kicked
+//!   once the copy ran.
 //! - Removal destroys the role objects, the buffers and targets, and the
 //!   surface.
 //!
@@ -87,7 +92,7 @@
 use std::collections::{HashMap, HashSet};
 
 use app::prelude::*;
-use atlas::Atlas;
+use atlas::{Atlas, Rescaled};
 use geometry::{Rect, Size};
 use gles::{Budget, Device};
 use layout::prelude::*;
@@ -187,6 +192,7 @@ pub struct Surfaces {
     /// Windows shown while still configured; `kick` needs the `App`, so
     /// `on_post_tick` kicks them.
     to_kick: Vec<NodeId>,
+    rescale: Rescale,
     owner: HashMap<ObjectId, NodeId>,
     layer_shell: Option<ZwlrLayerShellV1>,
     compositor: WlCompositor,
@@ -196,6 +202,25 @@ pub struct Surfaces {
     modifiers: Vec<u64>,
 }
 impl Resource for Surfaces {}
+
+/// Where the paint stands against the atlas's last rebuild.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Rescale {
+    /// The displayed paint holds current tiles.
+    Settled,
+    /// The atlas was rebuilt; the widgets' new paint has not been drained.
+    Pending,
+    /// The drain is queued: [`Drained`] follows the copy to
+    /// `AnimatedPaint`.
+    Draining,
+}
+
+/// Emitted at `PostTick` after a rebuild. Paint's drain is a `PostTick`
+/// system registered before presentation's, so its `OnChanged<Paint>`
+/// is queued first, and that event's `Emitted`, which animation copies
+/// to `AnimatedPaint` on, is signalled before this one's.
+struct Drained;
+impl Event for Drained {}
 
 impl Surfaces {
     pub fn surface_of(&self, window: NodeId) -> Option<WlSurface> {
@@ -245,7 +270,7 @@ impl Surfaces {
     /// settled but nothing is drawn. Showing it again commits empty so
     /// the compositor sends a fresh initial configure, whose settle draws
     /// the whole window. The unmap also resets the compositor's layer
-    /// state (anchor, zone, keyboard, size), so the show sends it again
+    /// state (layer, anchor, zone, keyboard, size), so the show sends it again
     /// first. A configure that arrives while hidden does not
     /// change this: it was sent before the unmap. A window hidden before
     /// its first buffer is kicked at the end of the tick (`PostTick`).
@@ -286,6 +311,7 @@ impl Surfaces {
             if entry.frames > 0 {
                 entry.configured = false;
                 if let (Shell::Layer(ls), Some((l, size))) = (&entry.shell, &entry.layer) {
+                    ls.set_layer(wl, l.layer);
                     ls.set_anchor(wl, l.anchor);
                     ls.set_exclusive_zone(wl, l.exclusive_zone);
                     ls.set_keyboard_interactivity(wl, l.keyboard_interactivity);
@@ -323,6 +349,39 @@ impl Surfaces {
         role.layer = layer;
         ls.set_layer(wl, layer);
         entry.surface.commit(wl);
+    }
+
+    /// Change a layer window's exclusive zone: sends
+    /// `zwlr_layer_surface_v1.set_exclusive_zone` and commits. The zone is
+    /// kept, so a remap after [`Surfaces::set_mapped`] sends it again;
+    /// while hidden it is only kept. The same zone sends nothing. No-op
+    /// for a toplevel or an unknown window.
+    pub fn set_exclusive_zone(&mut self, window: NodeId, zone: i32, wl: &mut Wayland) {
+        let Some(entry) = self.entries.get_mut(&window) else {
+            return;
+        };
+        let (Shell::Layer(ls), Some((role, _))) = (&entry.shell, entry.layer.as_mut()) else {
+            return;
+        };
+        if role.exclusive_zone == zone {
+            return;
+        }
+        role.exclusive_zone = zone;
+        if entry.hidden {
+            return;
+        }
+        ls.set_exclusive_zone(wl, zone);
+        entry.surface.commit(wl);
+    }
+
+    /// The current exclusive zone of a known layer window; `None` for a
+    /// toplevel or an unknown window.
+    pub fn exclusive_zone_of(&self, window: NodeId) -> Option<i32> {
+        self.entries
+            .get(&window)?
+            .layer
+            .as_ref()
+            .map(|(role, _)| role.exclusive_zone)
     }
 
     /// The current layer of a known layer window; `None` for a toplevel
@@ -379,6 +438,11 @@ impl Surfaces {
     fn entry_of(&mut self, object: ObjectId) -> Option<(NodeId, &mut Entry)> {
         let w = *self.owner.get(&object)?;
         self.entries.get_mut(&w).map(|e| (w, e))
+    }
+
+    /// How many sub-image uploads the device has issued. For tests.
+    pub fn upload_calls(&self) -> u64 {
+        self.device.upload_calls()
     }
 
     /// The pixels of the slot most recently drawn for `window`, as
@@ -447,6 +511,7 @@ impl Module for PresentationModule {
             pending_hidden: HashSet::new(),
             pending_layer: HashMap::new(),
             to_kick: Vec::new(),
+            rescale: Rescale::Settled,
             owner: HashMap::new(),
             layer_shell,
             app_id: self.app_id,
@@ -469,10 +534,12 @@ impl Module for PresentationModule {
             .system(on_surface)
             .system(on_frame_requested)
             .system(on_atlas_changed)
+            .system(on_scale_changed)
             .system(on_callback)
             .system(on_buffer)
             .system(on_removed)
             .system(on_post_tick)
+            .system(on_drained)
             .system(on_frame);
     }
 }
@@ -799,11 +866,58 @@ fn on_atlas_changed(app: &mut App, _: &OnChanged<Atlas>) {
     surfaces.device.upload(&atlas);
 }
 
+/// The atlas rasterizes at the largest scale any live window reports
+/// (`1.0` for one that has not reported), so no window samples tiles
+/// finer than it can show. A rebuild invalidates every tile a widget
+/// kept, so `Rescaled` goes to each window and all its descendants. This
+/// signal is queued after the window's own `on_scale_factor_changed` ran
+/// (an `Emitted` follows its event's handlers), so `Window::scale` is
+/// already the new value here.
+fn on_scale_changed(app: &mut App, _: &Emitted<ScaleFactorChanged>) {
+    let windows: Vec<(NodeId, f32)> = app
+        .widgets::<Window>()
+        .map(|(id, w)| (id, w.scale()))
+        .collect();
+    let Some(max) = windows.iter().map(|&(_, s)| s).reduce(f32::max) else {
+        return;
+    };
+    if !app.resource_mut::<Atlas>().set_scale(max) {
+        return;
+    }
+    app.resource_mut::<Surfaces>().rescale = Rescale::Pending;
+    let mut targets = Vec::new();
+    for (id, _) in windows {
+        targets.push(id);
+        targets.extend(app.descendants(id));
+    }
+    app.emit(Rescaled, targets);
+}
+
+/// The paint the last rebuild caused is displayed now: every window may
+/// draw again. A rebuild since the drain was queued leaves it pending.
+fn on_drained(app: &mut App, _: &Emitted<Drained>) {
+    let windows: Vec<NodeId> = {
+        let mut surfaces = app.resource_mut::<Surfaces>();
+        if surfaces.rescale != Rescale::Draining {
+            return;
+        }
+        surfaces.rescale = Rescale::Settled;
+        surfaces.entries.keys().copied().collect()
+    };
+    for w in windows {
+        kick(app, w);
+    }
+}
+
 /// The drawer and the commit: the last `Frame` system to run.
 fn on_frame(app: &mut App, f: &Frame) {
     let w = f.0;
-    let (mut surfaces, mut wl, mut scenes) =
-        app.query::<(ResMut<Surfaces>, ResMut<Wayland>, ResMut<Scenes>)>();
+    let (mut surfaces, mut wl, mut scenes, atlas) = app.query::<(
+        ResMut<Surfaces>,
+        ResMut<Wayland>,
+        ResMut<Scenes>,
+        Res<Atlas>,
+    )>();
     let s = &mut *surfaces;
     let Some(entry) = s.entries.get_mut(&w) else {
         return;
@@ -818,6 +932,16 @@ fn on_frame(app: &mut App, f: &Frame) {
     let Some(slots) = entry.slots.as_mut() else {
         return;
     };
+    if s.rescale != Rescale::Settled {
+        // The atlas is newer than the paint render just walked. Render
+        // kept this walk's damage, which no slot will hold, so every
+        // slot redraws whole; `on_drained` kicks.
+        for slot in &mut slots.slots {
+            slot.drawn = None;
+        }
+        entry.wanting = true;
+        return;
+    }
     let Some(i) = slots.free_slot() else {
         entry.wanting = true;
         return;
@@ -851,6 +975,7 @@ fn on_frame(app: &mut App, f: &Frame) {
         return;
     }
     let slot = &mut slots.slots[i];
+    s.device.upload(&atlas);
     s.device.draw(&slot.target, queue);
     if entry.scale != entry.scale_sent {
         entry.surface.set_buffer_scale(&mut wl, entry.scale);
@@ -897,11 +1022,22 @@ fn on_callback(app: &mut App, e: &WlCallbackEvent) {
     kick(app, w);
 }
 
-/// Kick the windows `set_mapped` showed while they were still configured.
+/// Kick the windows `set_mapped` showed while they were still configured,
+/// and after a rebuild queue [`Drained`] behind paint's drain.
 fn on_post_tick(app: &mut App, _: &PostTick) {
-    let windows = std::mem::take(&mut app.resource_mut::<Surfaces>().to_kick);
+    let (windows, drain) = {
+        let mut surfaces = app.resource_mut::<Surfaces>();
+        let drain = surfaces.rescale == Rescale::Pending;
+        if drain {
+            surfaces.rescale = Rescale::Draining;
+        }
+        (std::mem::take(&mut surfaces.to_kick), drain)
+    };
     for w in windows {
         kick(app, w);
+    }
+    if drain {
+        app.emit(Drained, Vec::new());
     }
 }
 

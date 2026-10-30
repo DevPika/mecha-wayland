@@ -25,6 +25,8 @@ pub(crate) struct Textures {
     mono: glow::Texture,
     color: glow::Texture,
     budget: Budget,
+    /// The `Atlas::generation` the layers below were assigned under.
+    generation: u64,
     mono_used: u32,
     color_used: u32,
     /// By `AtlasId`: the class and layer of a page that has a layer.
@@ -42,7 +44,7 @@ pub(crate) struct Textures {
 /// lifetime): the reference is only valid for that one call, so it
 /// cannot sit in a variable that survives to the next call. `page` is
 /// kept by `AtlasId` instead, a plain value with no lifetime; `flush`
-/// looks the page back up through `atlas.pages()`, a second shared
+/// looks the page back up through `atlas.page()`, a second shared
 /// borrow alongside `drain_dirty`'s own.
 struct Run {
     page: AtlasId,
@@ -92,6 +94,7 @@ impl Textures {
             mono,
             color,
             budget,
+            generation: 0,
             mono_used: 0,
             color_used: 0,
             pages: Vec::new(),
@@ -104,9 +107,23 @@ impl Textures {
         self.pages.get(id.0 as usize).is_some_and(|p| p.is_some())
     }
 
-    /// New pages get a layer; then every dirty cell goes up in runs.
+    /// New pages get a layer; then every dirty cell goes up in runs. A new
+    /// `Atlas::generation` scrapped every page and reused ids, so layers
+    /// are assigned afresh: the rebuilt pages are all dirty and go up whole.
     pub(crate) fn upload(&mut self, gpu: &Gpu, program: &Program, atlas: &Atlas) {
+        if atlas.externals().next().is_some() {
+            todo!("gles: Class::External (dmabuf import) is not implemented yet");
+        }
         let mut added = false;
+        if atlas.generation() != self.generation {
+            self.generation = atlas.generation();
+            self.pages.clear();
+            self.table = [0; TABLE];
+            self.mono_used = 0;
+            self.color_used = 0;
+            added = true;
+        }
+        let count = |class| atlas.pages().filter(|p| p.class() == class).count();
         for page in atlas.pages() {
             if self.has(page.id()) {
                 continue;
@@ -120,9 +137,12 @@ impl Textures {
                 Array::Mono => {
                     assert!(
                         self.mono_used < self.budget.mono_pages,
-                        "gles: the mono atlas budget of {} pages is spent by a {:?} page; raise Budget::mono_pages",
+                        "gles: the mono atlas budget of {} pages is spent by a {:?} page ({} glyph, {} icon, {} image pages live); raise Budget::mono_pages",
                         self.budget.mono_pages,
-                        page.class()
+                        page.class(),
+                        count(Class::Glyph),
+                        count(Class::Icon),
+                        count(Class::Image)
                     );
                     self.mono_used += 1;
                     self.mono_used - 1
@@ -130,9 +150,12 @@ impl Textures {
                 Array::Color => {
                     assert!(
                         self.color_used < self.budget.color_pages,
-                        "gles: the color atlas budget of {} pages is spent by a {:?} page; raise Budget::color_pages",
+                        "gles: the color atlas budget of {} pages is spent by a {:?} page ({} glyph, {} icon, {} image pages live); raise Budget::color_pages",
                         self.budget.color_pages,
-                        page.class()
+                        page.class(),
+                        count(Class::Glyph),
+                        count(Class::Icon),
+                        count(Class::Image)
                     );
                     self.color_used += 1;
                     self.color_used - 1
@@ -188,10 +211,7 @@ impl Textures {
     /// page's memory through unpack row length and skip.
     fn flush(&mut self, gpu: &Gpu, atlas: &Atlas, r: Run) {
         let gl = &gpu.gl;
-        let page = atlas
-            .pages()
-            .find(|p| p.id() == r.page)
-            .expect("a run names a live page");
+        let page = atlas.page(r.page).expect("a run names a live page");
         let (unit, format, levels) = match array_of(page.class()) {
             Array::Mono => (
                 0,

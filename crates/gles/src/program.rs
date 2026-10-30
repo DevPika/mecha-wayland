@@ -120,11 +120,13 @@ void main() {
         color.a *= m;
     } else if (kind == 2u) {
         vec4 t = texture(u_color, vec3(v_uv, float(v_layer)));
+        // pages are premultiplied: unpremultiply after filtering
+        vec3 rgb = t.a > 0.0 ? t.rgb / t.a : vec3(0.0);
         if ((v_flags & 4u) != 0u) {
-            t.rgb = vec3(dot(t.rgb, vec3(0.2126, 0.7152, 0.0722)));
+            rgb = vec3(dot(rgb, vec3(0.2126, 0.7152, 0.0722)));
         }
         float opacity = float((v_flags >> 8) & 255u) / 255.0;
-        color = vec4(t.rgb * v_color.rgb, t.a * v_color.a * opacity);
+        color = vec4(rgb * v_color.rgb, t.a * v_color.a * opacity);
     }
 
     float a = color.a * coverage;

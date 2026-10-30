@@ -2,12 +2,13 @@
 //! atlas.
 
 use app::{Build, Context, Handle, Spawner, Widget};
-use atlas::{Atlas, AtlasTile, SpriteId};
+use atlas::{Atlas, AtlasTile, Rescaled, SpriteId};
 use geometry::Corners;
 use layout::{LayoutStyle, Measure};
 use paint::{Paint, PaintContext, PolychromeSprite};
 
 pub struct Image {
+    sprite: SpriteId,
     tile: AtlasTile,
     radii: Corners<f32>,
     opacity: f32,
@@ -80,7 +81,23 @@ impl Widget for Image {
                 .grayscale(b.grayscale),
         );
         *s.component_mut::<Measure>(me).unwrap() = Measure::fixed(sprite.size);
+        s.on::<Rescaled>(me, |ctx: &mut Context<'_, Image>, _| {
+            let id = ctx.me().sprite;
+            let tile = ctx.resource::<Atlas>().sprite(id).tile;
+            let (radii, opacity, grayscale) = {
+                let w = ctx.me();
+                (w.radii, w.opacity, w.grayscale)
+            };
+            ctx.set_paint(Paint::Polychrome(
+                PolychromeSprite::new(tile)
+                    .radii(radii)
+                    .opacity(opacity)
+                    .grayscale(grayscale),
+            ));
+            ctx.me().tile = tile;
+        });
         Image {
+            sprite: b.sprite,
             tile: sprite.tile,
             radii: b.radii,
             opacity: b.opacity,
@@ -100,8 +117,8 @@ pub trait ImageContext {
 }
 
 impl ImageContext for Context<'_, Image> {
-    fn set_sprite(&mut self, sprite: SpriteId) {
-        let sprite = self.resource::<Atlas>().sprite(sprite);
+    fn set_sprite(&mut self, id: SpriteId) {
+        let sprite = self.resource::<Atlas>().sprite(id);
         if self.me().tile == sprite.tile {
             return;
         }
@@ -116,7 +133,9 @@ impl ImageContext for Context<'_, Image> {
                 .grayscale(grayscale),
         ));
         *self.component_mut::<Measure>().unwrap() = Measure::fixed(sprite.size);
-        self.me().tile = sprite.tile;
+        let w = self.me();
+        w.sprite = id;
+        w.tile = sprite.tile;
     }
 
     fn set_opacity(&mut self, opacity: f32) {

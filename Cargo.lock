@@ -403,6 +403,7 @@ dependencies = [
  "ring",
  "text-input",
  "theme",
+ "timer",
  "wayland",
  "widgets",
  "window",
@@ -534,6 +535,7 @@ dependencies = [
  "render",
  "ring",
  "wayland",
+ "widgets",
  "window",
  "xkbcommon",
 ]
@@ -778,6 +780,15 @@ version = "0.1.0"
 dependencies = [
  "app",
  "geometry",
+]
+
+[[package]]
+name = "timer"
+version = "0.1.0"
+dependencies = [
+ "app",
+ "libc",
+ "ring",
 ]
 
 [[package]]

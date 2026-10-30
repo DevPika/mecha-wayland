@@ -88,7 +88,8 @@ impl Page {
         PAGE >> k
     }
 
-    /// Level `k`, row-major, tightly packed. Panics past `levels()`.
+    /// Level `k`, row-major, tightly packed; premultiplied RGBA on an
+    /// `Image` page. Panics past `levels()`.
     pub fn level(&self, k: u32) -> &[u8] {
         &self.levels[k as usize]
     }

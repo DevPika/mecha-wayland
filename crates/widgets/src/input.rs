@@ -552,14 +552,13 @@ impl Widget for Input {
             // is mapped back to the real string's byte offset so the
             // cursor stays correct in the committed text.
             let offset = {
-                let mut atlas = ctx.resource_mut::<Atlas>();
+                let atlas = ctx.resource::<Atlas>();
                 if hidden {
                     let masked = mask(&string);
-                    let masked_off =
-                        crate::text::hit_position(&mut atlas, font, font_px, &masked, x);
+                    let masked_off = crate::text::hit_position(&atlas, font, font_px, &masked, x);
                     unmask_offset(&string, masked_off)
                 } else {
-                    crate::text::hit_position(&mut atlas, font, font_px, &string, x)
+                    crate::text::hit_position(&atlas, font, font_px, &string, x)
                 }
             };
             ctx.me().cursor = offset;
@@ -613,8 +612,8 @@ fn sync(ctx: &mut Context<'_, Input>) {
     };
     ctx.at(content).unwrap().set_text(display);
     let x = if focused {
-        let mut atlas = ctx.resource_mut::<Atlas>();
-        crate::text::measure(&mut atlas, font, font_px, &before_cursor)
+        let atlas = ctx.resource::<Atlas>();
+        crate::text::measure(&atlas, font, font_px, &before_cursor)
     } else {
         0.0
     };
