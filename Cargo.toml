@@ -39,6 +39,7 @@ members = [
     "crates/presentation",
     "crates/render",
     "crates/ring",
+    "crates/timer",
     "crates/wayland",
     "crates/widgets",
     "crates/window",
@@ -61,6 +62,7 @@ paint = { path = "crates/paint" }
 presentation = { path = "crates/presentation" }
 render = { path = "crates/render" }
 ring = { path = "crates/ring" }
+timer = { path = "crates/timer" }
 wayland = { path = "crates/wayland" }
 widgets = { path = "crates/widgets" }
 window = { path = "crates/window" }
