@@ -1,7 +1,7 @@
 //! A counter that demonstrates theme-aware colors and runtime theme switching.
 //! Run under a Wayland session: `cargo run --example themed_counter`.
 
-use atlas::{Bitmap, Class, SpriteId};
+use atlas::SpriteId;
 use mecha_wayland::mechanix_widgets::prelude::{
     ButtonVariant, FontBook, TextContextExt, button, text,
 };
@@ -138,10 +138,9 @@ fn main() {
         .expect("Inter loads");
     app.insert_resource(FontBook::new(font));
 
-    let reset_bitmap = Bitmap::from_svg(RESET_ICON_SVG, 24).expect("SVG icon renders");
     let reset_icon = app
         .resource_mut::<Atlas>()
-        .insert(Class::Icon, &reset_bitmap)
+        .insert_svg(RESET_ICON_SVG, 24)
         .expect("insert reset icon");
 
     app.add_module(RingModule::default())
