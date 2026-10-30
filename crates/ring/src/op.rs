@@ -17,6 +17,14 @@ pub(crate) enum Kind {
     Recv,
     Send,
     Timeout,
+    /// Readiness interests belong only to poll operations.
+    Poll {
+        events: u32,
+    },
+    /// target is the userdata of the call we want to cancel
+    AsyncCancel {
+        target: u64,
+    },
 }
 
 pub(crate) struct Op {
@@ -138,6 +146,37 @@ impl Op {
         })
     }
 
+    /// A one-shot readiness poll. Successful completions carry readiness flags.
+    pub(crate) fn poll(events: u32) -> Box<Op> {
+        // SAFETY: all-zero is valid for iovec and msghdr.
+        // Neither structure is used by this operation.
+        Box::new(Op {
+            kind: Kind::Poll { events },
+            buf: Vec::new(),
+            fds: Vec::new(),
+            raw_fds: Vec::new(),
+            iov: unsafe { mem::zeroed() },
+            msg: unsafe { mem::zeroed() },
+            cmsg: Vec::new(),
+            ts: types::Timespec::new(),
+            result: None,
+        })
+    }
+
+    pub(crate) fn cancel(target: u64) -> Box<Op> {
+        Box::new(Op {
+            kind: Kind::AsyncCancel { target },
+            buf: Vec::new(),
+            fds: Vec::new(),
+            raw_fds: Vec::new(),
+            iov: unsafe { mem::zeroed() },
+            msg: unsafe { mem::zeroed() },
+            cmsg: Vec::new(),
+            ts: types::Timespec::new(),
+            result: None,
+        })
+    }
+
     /// The submission entry. Valid while this box lives, which is until
     /// `complete`.
     ///
@@ -154,6 +193,8 @@ impl Op {
                 .flags(libc::MSG_NOSIGNAL as u32)
                 .build(),
             Kind::Timeout => opcode::Timeout::new(&self.ts).build(),
+            Kind::Poll { events } => opcode::PollAdd::new(types::Fd(fd), events).build(),
+            Kind::AsyncCancel { target } => opcode::AsyncCancel::new(target).build(),
         }
     }
 

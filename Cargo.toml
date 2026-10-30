@@ -25,6 +25,9 @@ theme.workspace = true
 text-input.workspace = true
 mechanix-widgets.workspace = true
 
+[dev-dependencies]
+libc.workspace = true
+
 [workspace]
 members = [
     "crates/app",
