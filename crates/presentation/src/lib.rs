@@ -325,6 +325,39 @@ impl Surfaces {
         entry.surface.commit(wl);
     }
 
+    /// Change a layer window's exclusive zone: sends
+    /// `zwlr_layer_surface_v1.set_exclusive_zone` and commits. The zone is
+    /// kept, so a remap after [`Surfaces::set_mapped`] sends it again;
+    /// while hidden it is only kept. The same zone sends nothing. No-op
+    /// for a toplevel or an unknown window.
+    pub fn set_exclusive_zone(&mut self, window: NodeId, zone: i32, wl: &mut Wayland) {
+        let Some(entry) = self.entries.get_mut(&window) else {
+            return;
+        };
+        let (Shell::Layer(ls), Some((role, _))) = (&entry.shell, entry.layer.as_mut()) else {
+            return;
+        };
+        if role.exclusive_zone == zone {
+            return;
+        }
+        role.exclusive_zone = zone;
+        if entry.hidden {
+            return;
+        }
+        ls.set_exclusive_zone(wl, zone);
+        entry.surface.commit(wl);
+    }
+
+    /// The current exclusive zone of a known layer window; `None` for a
+    /// toplevel or an unknown window.
+    pub fn exclusive_zone_of(&self, window: NodeId) -> Option<i32> {
+        self.entries
+            .get(&window)?
+            .layer
+            .as_ref()
+            .map(|(role, _)| role.exclusive_zone)
+    }
+
     /// The current layer of a known layer window; `None` for a toplevel
     /// or an unknown window.
     pub fn layer_of(&self, window: NodeId) -> Option<Layer> {

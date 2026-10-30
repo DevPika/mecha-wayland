@@ -862,7 +862,10 @@ fn a_configure_in_flight_across_the_unmap_does_not_skip_the_remap_commit() {
     f.app.tick();
     f.turn();
     let s = shape(&mut f);
-    assert_eq!(s, REMAP_SHAPE, "layer state then an empty commit, no attach");
+    assert_eq!(
+        s, REMAP_SHAPE,
+        "layer state then an empty commit, no attach"
+    );
     assert!(!f.app.resource::<Surfaces>().is_configured(win));
 
     layer_configure(&mut f, 5);
@@ -977,6 +980,67 @@ fn set_layer_on_a_toplevel_does_nothing() {
     set_layer(&mut f, win, Layer::Background);
     assert!(shape(&mut f).is_empty());
     assert_eq!(f.app.resource::<Surfaces>().layer_of(win), None);
+}
+
+fn set_exclusive_zone(f: &mut Fake, win: NodeId, zone: i32) {
+    {
+        let (mut surfaces, mut wl) = f.app.query::<(ResMut<Surfaces>, ResMut<Wayland>)>();
+        surfaces.set_exclusive_zone(win, zone, &mut wl);
+    }
+    f.turn();
+}
+
+#[test]
+fn set_exclusive_zone_sends_the_zone_then_commits() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_exclusive_zone(&mut f, win, 252);
+    let reqs = f.requests();
+    let shape: Vec<(u32, u16)> = reqs.iter().map(|r| (r.sender.0, r.opcode)).collect();
+    assert_eq!(
+        shape,
+        vec![(XDG, op::LAYER_SET_ZONE), (SURFACE, op::COMMIT)],
+        "{reqs:?}"
+    );
+    assert_eq!(reqs[0].reader().int(), Some(252));
+    let s = f.app.resource::<Surfaces>();
+    assert_eq!(s.exclusive_zone_of(win), Some(252));
+    assert!(s.is_mapped(win));
+}
+
+#[test]
+fn set_exclusive_zone_to_the_current_zone_sends_nothing() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_exclusive_zone(&mut f, win, 0);
+    assert!(shape(&mut f).is_empty());
+}
+
+#[test]
+fn set_exclusive_zone_while_hidden_is_sent_on_remap() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = drawn_layer(&mut f);
+    set_mapped(&mut f, win, false);
+    f.requests();
+    set_exclusive_zone(&mut f, win, 252);
+    assert!(shape(&mut f).is_empty(), "nothing is sent while hidden");
+    set_mapped(&mut f, win, true);
+    let reqs = f.requests();
+    let zone = reqs
+        .iter()
+        .find(|r| r.sender == ObjectId(XDG) && r.opcode == op::LAYER_SET_ZONE)
+        .expect("the remap sends the zone");
+    assert_eq!(zone.reader().int(), Some(252));
+}
+
+#[test]
+fn set_exclusive_zone_on_a_toplevel_does_nothing() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 320, 200);
+    f.requests();
+    set_exclusive_zone(&mut f, win, 252);
+    assert!(shape(&mut f).is_empty());
+    assert_eq!(f.app.resource::<Surfaces>().exclusive_zone_of(win), None);
 }
 
 fn set_input_region(f: &mut Fake, win: NodeId, region: Option<&[Rect]>) {
