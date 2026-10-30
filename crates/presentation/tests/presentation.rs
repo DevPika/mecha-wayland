@@ -6,7 +6,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use animation::AnimationModule;
 use app::prelude::*;
-use atlas::Atlas;
+use atlas::{Atlas, Rescaled};
 use geometry::{Color, Rect};
 use gles::{Budget, Device, Error};
 use interactivity::prelude::*;
@@ -134,6 +134,12 @@ fn log_scale(app: &mut App, e: &Emitted<ScaleFactorChanged>) {
         .0
         .push(format!("Scale {}", e.event.scale));
 }
+#[derive(Default)]
+struct Rescales(Vec<Vec<NodeId>>);
+impl Resource for Rescales {}
+fn log_rescaled(app: &mut App, e: &Emitted<Rescaled>) {
+    app.resource_mut::<Rescales>().0.push(e.targets.to_vec());
+}
 fn log_close(app: &mut App, e: &Emitted<CloseRequested>) {
     let target = e.targets.iter().next().copied();
     app.resource_mut::<Log>()
@@ -211,8 +217,10 @@ fn fake() -> Option<(MutexGuard<'static, ()>, Fake)> {
         .insert_resource(Atlas::new());
     f.app
         .init_resource::<Log>()
+        .init_resource::<Rescales>()
         .system(log_resized)
         .system(log_scale)
+        .system(log_rescaled)
         .system(log_close)
         .system(log_frame)
         .system(log_contact)
@@ -1545,6 +1553,192 @@ fn a_glyph_resolved_in_a_tick_is_on_the_gpu_before_that_ticks_frame() {
         "the glyph's ink is white on black: {brightest}"
     );
     let _ = w;
+}
+
+#[test]
+fn a_window_scale_rescales_the_atlas() {
+    struct Probe;
+    impl Build for Probe {
+        type Widget = Probe;
+    }
+    impl Widget for Probe {
+        type Builder = Probe;
+        fn build(b: Probe, _: Handle<Self>, _: &mut Spawner<'_, Self>) -> Self {
+            b
+        }
+    }
+    let Some((_gpu, mut f)) = fake() else { return };
+    let a = configured(&mut f, 64, 64);
+    let b = spawn(&mut f, LayoutStyle::default().column());
+    let probe = f.app.spawn(b, Probe).id();
+    f.app.tick();
+    f.turn();
+    let rescaled = |f: &Fake| f.app.resource::<Rescales>().0.clone();
+    assert_eq!(f.app.resource::<Atlas>().scale(), 1.0);
+    assert!(rescaled(&f).is_empty());
+
+    // The window's own handler stores the scale before the `Emitted`
+    // signal reaches the system, or the atlas would still read 1.
+    f.app.emit(ScaleFactorChanged { scale: 2.0 }, a);
+    f.app.tick();
+    f.turn();
+    assert_eq!(f.app.resource::<Atlas>().scale(), 2.0);
+    let got = rescaled(&f);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].contains(&probe), "{:?}", got[0]);
+    assert!(got[0].contains(&a) && got[0].contains(&b));
+
+    // The same scale again changes nothing.
+    f.app.emit(ScaleFactorChanged { scale: 2.0 }, a);
+    f.app.tick();
+    f.turn();
+    assert_eq!(rescaled(&f).len(), 1);
+
+    // The other window is still 1: the largest wins, so back to 1.
+    f.app.emit(ScaleFactorChanged { scale: 1.0 }, a);
+    f.app.tick();
+    f.turn();
+    assert_eq!(f.app.resource::<Atlas>().scale(), 1.0);
+    assert_eq!(rescaled(&f).len(), 2);
+}
+
+#[test]
+fn a_frame_uploads_before_drawing() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 64, 64);
+    f.requests();
+    repaint(&mut f, win);
+    f.send(CALLBACK, ev::DONE, |w| w.uint(0));
+    f.turn();
+    repaint(&mut f, win);
+    f.send(CALLBACK + 1, ev::DONE, |w| w.uint(0));
+    f.turn();
+    assert!(attaches(&mut f).len() == 1, "both buffers are held now");
+    let before = f.app.resource::<Surfaces>().upload_calls();
+    // A new page's glyph, rasterized after the last tick: `OnChanged<Atlas>`
+    // has not fired, so only the frame itself can upload it.
+    {
+        let mut atlas = f.app.resource_mut::<Atlas>();
+        let inter = atlas
+            .add_font(include_bytes!(
+                "../../atlas/tests/fixtures/Inter-Regular.ttf"
+            ))
+            .unwrap();
+        let (font, id) = atlas.lookup(&[inter], 'a').unwrap();
+        atlas.glyph(font, id, 40);
+    }
+    f.send(BUF_A, ev::RELEASE, |_| {});
+    f.turn();
+    assert_eq!(attaches(&mut f), vec![BUF_A], "the released slot was drawn");
+    assert!(
+        f.app.resource::<Surfaces>().upload_calls() > before,
+        "the frame uploaded the dirty glyph"
+    );
+}
+
+/// What the displayed paint held at each `Frame`, against what the atlas
+/// holds for the same glyph then: `(generation, drawn, current)`.
+#[derive(Default)]
+struct StaleProbe {
+    key: Option<(atlas::FontId, u16, NodeId)>,
+    frames: Vec<(u64, atlas::AtlasTile, atlas::AtlasTile)>,
+}
+impl Resource for StaleProbe {}
+fn probe_frame(app: &mut App, _: &Frame) {
+    let Some((font, id, leaf)) = app.resource::<StaleProbe>().key else {
+        return;
+    };
+    let drawn = match &app.component::<animation::AnimatedPaint>(leaf).unwrap().0 {
+        Paint::Monochrome(s) => s[0].tile,
+        _ => return,
+    };
+    let (generation, now) = {
+        let mut a = app.resource_mut::<Atlas>();
+        (a.generation(), a.glyph(font, id, 40).tile)
+    };
+    app.resource_mut::<StaleProbe>()
+        .frames
+        .push((generation, drawn, now));
+}
+
+#[test]
+fn a_frame_queued_behind_a_rescale_waits_for_the_rescaled_paint() {
+    struct Glyphy(atlas::FontId, u16);
+    impl Build for Glyphy {
+        type Widget = Glyphy;
+    }
+    impl Widget for Glyphy {
+        type Builder = Glyphy;
+        fn build(b: Glyphy, me: Handle<Self>, s: &mut Spawner<'_, Self>) -> Self {
+            s.on::<Rescaled>(me, |ctx: &mut Context<'_, Glyphy>, _| {
+                let (font, id) = (ctx.me().0, ctx.me().1);
+                let g = ctx.resource_mut::<Atlas>().glyph(font, id, 40);
+                ctx.set_paint(Paint::Monochrome(vec![MonochromeSprite::new(
+                    g.tile,
+                    geometry::Point::ZERO,
+                    g.size,
+                    Color::WHITE,
+                )]));
+            });
+            b
+        }
+    }
+    let Some((_gpu, mut f)) = fake() else { return };
+    f.app.init_resource::<StaleProbe>().system(probe_frame);
+    let win = configured(&mut f, 64, 64);
+    let (font, id, g) = {
+        let mut atlas = f.app.resource_mut::<Atlas>();
+        let inter = atlas
+            .add_font(include_bytes!(
+                "../../atlas/tests/fixtures/Inter-Regular.ttf"
+            ))
+            .unwrap();
+        let (font, id) = atlas.lookup(&[inter], 'a').unwrap();
+        (font, id, atlas.glyph(font, id, 40))
+    };
+    let leaf = f
+        .app
+        .spawn_with(
+            win,
+            Glyphy(font, id),
+            (
+                LayoutStyle::default().size(px(30.0), px(30.0)),
+                Paint::Monochrome(vec![MonochromeSprite::new(
+                    g.tile,
+                    geometry::Point::ZERO,
+                    g.size,
+                    Color::WHITE,
+                )]),
+            ),
+        )
+        .id();
+    f.app.resource_mut::<StaleProbe>().key = Some((font, id, leaf));
+    f.app.tick();
+    f.turn();
+    f.send(CALLBACK, ev::DONE, |w| w.uint(1));
+    f.turn();
+    f.app.tick();
+    f.turn();
+    assert!(!attaches(&mut f).is_empty(), "the glyph frame was drawn");
+
+    // One read: the scale, then the outstanding callback's `done`. The
+    // `done`'s kick queues `Frame` behind the `Emitted` that rebuilds the
+    // atlas, so it runs before the `Rescaled` paint reaches the displayed
+    // paint; drawing it would sample old tiles from the new pages.
+    f.send(SURFACE, ev::PREFERRED_SCALE, |w| w.int(2));
+    f.send(CALLBACK + 1, ev::DONE, |w| w.uint(2));
+    f.turn();
+    assert_eq!(f.app.resource::<Atlas>().generation(), 1, "rebuilt");
+    assert!(attaches(&mut f).is_empty(), "the frame waits for the paint");
+
+    // The next tick carries the paint to the displayed paint, and the
+    // deferred frame draws with the current tiles.
+    f.app.tick();
+    f.turn();
+    assert!(!attaches(&mut f).is_empty(), "the deferred frame was drawn");
+    let &(generation, drawn, now) = f.app.resource::<StaleProbe>().frames.last().unwrap();
+    assert_eq!(generation, 1);
+    assert_eq!(drawn, now, "the drawn frame uses the rebuilt tiles");
 }
 
 // ── removal ────────────────────────────────────────────────────────────

@@ -534,6 +534,7 @@ dependencies = [
  "render",
  "ring",
  "wayland",
+ "widgets",
  "window",
  "xkbcommon",
 ]

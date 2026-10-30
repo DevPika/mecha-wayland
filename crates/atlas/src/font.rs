@@ -1,13 +1,15 @@
 //! Fonts and glyph records: fontdue behind a per-font, per-size index
-//! vector, so a glyph is rasterized once per pixel size and found again
-//! with no hashing.
+//! vector, so a glyph is rasterized once per logical pixel size and found
+//! again with no hashing.
 
 use std::borrow::Cow;
 
-use crate::{Atlas, AtlasId, AtlasTile, Bitmap, Class, Error, FontId, Format};
+use geometry::Size;
 
-/// A glyph's tile and what places it, all in device pixels at the size it
-/// was asked for.
+use crate::{Atlas, AtlasId, AtlasTile, Bitmap, Class, Error, FontId, Format, PAGE, Page};
+
+/// A glyph's tile and what places it. Placement is logical pixels at the
+/// size it was asked for; the tile is device pixels at the atlas's scale.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Glyph {
     /// Empty bounds for a glyph with no ink, such as a space.
@@ -16,8 +18,24 @@ pub struct Glyph {
     pub left: f32,
     /// Baseline to the bitmap's top edge, positive above.
     pub top: f32,
-    /// Pen to the next pen.
+    /// Pen to the next pen, the same at every scale.
     pub advance: f32,
+    /// The ink, logical.
+    pub size: Size,
+    /// The tile's width in device pixels.
+    pub physical_width: u32,
+    /// The tile's height in device pixels.
+    pub physical_height: u32,
+}
+
+/// A glyph record and the key it was made from, to make it again at
+/// another scale under the same index.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Record {
+    pub(crate) font: FontId,
+    pub(crate) id: u16,
+    pub(crate) px: u16,
+    pub(crate) glyph: Glyph,
 }
 
 /// Line metrics at one pixel size, as the font gives them: `descent` is
@@ -92,6 +110,15 @@ impl Atlas {
         })
     }
 
+    /// Pen to the next pen for `glyph` at logical `px`, from the font's
+    /// metrics: nothing is rasterized. `glyph(..).advance` is this.
+    pub fn advance(&self, font: FontId, glyph: u16, px: u16) -> f32 {
+        self.fonts[font.0 as usize]
+            .inner
+            .metrics_indexed(glyph, px as f32)
+            .advance_width
+    }
+
     /// The kerning between two glyphs at `px`; zero when the font has no
     /// pair.
     pub fn kern(&self, font: FontId, left: u16, right: u16, px: u16) -> f32 {
@@ -121,18 +148,36 @@ impl Atlas {
         }
     }
 
-    /// The record for `glyph` of `font` at `px`, rasterized and packed
-    /// into the `Glyph` class on first sight, returned from the record
-    /// list ever after. Panics on a font this atlas did not mint or a
-    /// glyph id past the font's count; ids come from `lookup`.
+    /// The record for `glyph` of `font` at logical `px`, rasterized at
+    /// `round(px * scale)` and packed into the `Glyph` class on first
+    /// sight, returned from the record list ever after. Panics on a font
+    /// this atlas did not mint or a glyph id past the font's count; ids
+    /// come from `lookup`. Panics on a glyph whose bitmap cannot fit an
+    /// empty page.
     pub fn glyph(&mut self, font: FontId, glyph: u16, px: u16) -> Glyph {
         let slot = *self.fonts[font.0 as usize].slot(px, glyph);
         if slot != NONE {
-            return self.glyphs[slot as usize];
+            return self.glyphs[slot as usize].glyph;
         }
+        let record = self.raster(font, glyph, px);
+        let index = self.glyphs.len() as u32;
+        self.glyphs.push(Record {
+            font,
+            id: glyph,
+            px,
+            glyph: record,
+        });
+        *self.fonts[font.0 as usize].slot(px, glyph) = index;
+        record
+    }
+
+    /// Rasterize and pack `glyph` of `font` at logical `px` at the current
+    /// scale: the body of a miss, and of a rebuild.
+    pub(crate) fn raster(&mut self, font: FontId, glyph: u16, px: u16) -> Glyph {
+        let scale = self.scale;
         let (m, pixels) = self.fonts[font.0 as usize]
             .inner
-            .rasterize_indexed(glyph, px as f32);
+            .rasterize_indexed(glyph, (px as f32 * scale).round());
         let tile = if m.width == 0 || m.height == 0 {
             AtlasTile {
                 atlas: AtlasId::default(),
@@ -145,19 +190,25 @@ impl Atlas {
                 format: Format::R8,
                 pixels,
             };
+            if !Page::fits(Class::Glyph, bitmap.width, bitmap.height) {
+                panic!(
+                    "atlas: glyph {glyph} of {font:?} at {px} px, scale {scale}, is {}x{}, \
+                     larger than a {PAGE} page",
+                    bitmap.width, bitmap.height
+                );
+            }
             self.pack(Class::Glyph, &bitmap)
-                .expect("a glyph bitmap is R8 and far smaller than a page")
+                .expect("a glyph bitmap is R8 and fits a page")
         };
-        let record = Glyph {
+        Glyph {
             tile,
-            left: m.xmin as f32,
-            top: (m.ymin + m.height as i32) as f32,
-            advance: m.advance_width,
-        };
-        let index = self.glyphs.len() as u32;
-        self.glyphs.push(record);
-        *self.fonts[font.0 as usize].slot(px, glyph) = index;
-        record
+            left: m.xmin as f32 / scale,
+            top: (m.ymin + m.height as i32) as f32 / scale,
+            advance: self.advance(font, glyph, px),
+            size: Size::new(m.width as f32 / scale, m.height as f32 / scale),
+            physical_width: m.width as u32,
+            physical_height: m.height as u32,
+        }
     }
 
     /// `glyph` for every character of `chars` that `font` has, at `px`.

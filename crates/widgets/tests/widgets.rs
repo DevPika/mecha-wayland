@@ -224,6 +224,59 @@ fn a_text_paints_a_monochrome_run_sized_to_its_content() {
     assert!(rect(&app, label.id()).height() > 0.0);
 }
 
+fn sprite_tiles(app: &App, id: NodeId) -> Vec<AtlasTile> {
+    match app.component::<Paint>(id).unwrap() {
+        Paint::Monochrome(sprites) => sprites.iter().map(|s| s.tile).collect(),
+        other => panic!("expected a Monochrome run, got {other:?}"),
+    }
+}
+
+fn fresh_tiles(app: &mut App, font: FontId, string: &str, px: u16) -> Vec<AtlasTile> {
+    let mut atlas = app.resource_mut::<Atlas>();
+    string
+        .chars()
+        .filter_map(|c| {
+            let (f, id) = atlas.lookup(&[font], c)?;
+            Some(atlas.glyph(f, id, px).tile)
+        })
+        .filter(|t| t.bounds.width() > 0.0)
+        .collect()
+}
+
+#[test]
+fn a_text_reshapes_on_rescale() {
+    let mut app = app();
+    let root = root(&mut app, 200.0, 100.0);
+    let font = app.resource_mut::<Atlas>().add_font(INTER).unwrap();
+    let label: Handle<Text> = app.spawn(root, text(font, "hi").size(16));
+    app.tick();
+    let size = rect(&app, label.id()).size;
+    let before = sprite_tiles(&app, label.id());
+
+    app.resource_mut::<Atlas>().set_scale(2.0);
+    app.emit(Rescaled, label.id());
+    app.tick();
+
+    let after = sprite_tiles(&app, label.id());
+    assert_ne!(before, after);
+    assert_eq!(after, fresh_tiles(&mut app, font, "hi", 16));
+    assert_eq!(rect(&app, label.id()).size, size, "Measure is unchanged");
+}
+
+#[test]
+fn a_text_built_after_rescale_is_sharp() {
+    let mut app = app();
+    let root = root(&mut app, 200.0, 100.0);
+    let font = app.resource_mut::<Atlas>().add_font(INTER).unwrap();
+    app.resource_mut::<Atlas>().set_scale(2.0);
+    let label: Handle<Text> = app.spawn(root, text(font, "hi").size(16));
+    app.tick();
+    assert_eq!(
+        sprite_tiles(&app, label.id()),
+        fresh_tiles(&mut app, font, "hi", 16)
+    );
+}
+
 #[test]
 fn text_context_set_text_reshapes_and_relayouts() {
     let mut app = app();
@@ -805,4 +858,62 @@ fn button_context_setters_mutate_props_and_paint() {
         }
         other => panic!("expected Quad, got {other:?}"),
     }
+}
+
+const SQUARE_SVG: &[u8] =
+    br#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20" fill="black"/></svg>"#;
+
+#[test]
+fn an_icon_follows_rescale() {
+    let mut app = app();
+    let root = root(&mut app, 100.0, 100.0);
+    let id = app.resource_mut::<Atlas>().insert_svg(SQUARE_SVG, 20).unwrap();
+    let red = Color::rgb(1.0, 0.0, 0.0);
+    let glyph: Handle<Icon> = app.spawn(root, icon(id).color(red));
+    app.tick();
+    let before = app.resource::<Atlas>().sprite(id).tile;
+
+    app.resource_mut::<Atlas>().set_scale(2.0);
+    app.emit(Rescaled, glyph.id());
+    app.tick();
+
+    let sprite = app.resource::<Atlas>().sprite(id);
+    assert_ne!(sprite.tile, before);
+    assert_eq!(sprite.size, geometry::Size::new(20.0, 20.0));
+    match app.component::<Paint>(glyph).unwrap() {
+        Paint::Monochrome(sprites) => {
+            assert_eq!(sprites.len(), 1);
+            assert_eq!(sprites[0].tile, sprite.tile);
+            assert_eq!(sprites[0].size, geometry::Size::new(20.0, 20.0));
+            assert_eq!(sprites[0].color, red);
+        }
+        other => panic!("expected Monochrome, got {other:?}"),
+    }
+    assert_eq!(rect(&app, glyph.id()).width(), 20.0);
+}
+
+#[test]
+fn an_image_follows_rescale() {
+    let mut app = app();
+    let root = root(&mut app, 100.0, 100.0);
+    let id = app.resource_mut::<Atlas>().insert_svg(SQUARE_SVG, 20).unwrap();
+    let photo: Handle<Image> = app.spawn(root, image(id).opacity(0.5));
+    app.tick();
+    let before = app.resource::<Atlas>().sprite(id).tile;
+
+    app.resource_mut::<Atlas>().set_scale(2.0);
+    app.emit(Rescaled, photo.id());
+    app.tick();
+
+    let sprite = app.resource::<Atlas>().sprite(id);
+    assert_ne!(sprite.tile, before);
+    assert_eq!(sprite.size, geometry::Size::new(20.0, 20.0));
+    match app.component::<Paint>(photo).unwrap() {
+        Paint::Polychrome(p) => {
+            assert_eq!(p.tile, sprite.tile);
+            assert_eq!(p.opacity, 0.5);
+        }
+        other => panic!("expected Polychrome, got {other:?}"),
+    }
+    assert_eq!(rect(&app, photo.id()).width(), 20.0);
 }

@@ -20,3 +20,4 @@ animation.workspace = true
 paint.workspace = true
 ring.workspace = true
 wayland = { workspace = true, features = ["fake"] }
+widgets.workspace = true

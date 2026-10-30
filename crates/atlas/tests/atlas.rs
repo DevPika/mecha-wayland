@@ -182,8 +182,8 @@ fn a_backend_reads_a_dirty_cell_at_every_level() {
         let i = (cy * side + cx) * 4;
         assert_eq!(
             &out[i..i + 4],
-            &[128, 128, 128, 128],
-            "level {k} holds the image's grey"
+            &[64, 64, 64, 128],
+            "level {k} holds the image's grey, premultiplied"
         );
     }
 }
@@ -370,4 +370,70 @@ fn paint_builds_sprites_from_atlas_tiles() {
     let pic = Paint::Polychrome(PolychromeSprite::new(atlas.sprite(art).tile));
     assert!(!pic.is_invisible());
     assert_eq!(atlas.class(atlas.sprite(art).tile.atlas), Class::Image);
+}
+
+#[test]
+fn error_displays_its_cause() {
+    let text = Error::TooLarge {
+        width: 2000,
+        height: 10,
+        max: 992,
+    }
+    .to_string();
+    assert!(text.contains("2000") && text.contains("992"), "{text}");
+    let _: Box<dyn std::error::Error> = Error::Class.into();
+}
+
+#[test]
+fn page_finds_a_page_by_id() {
+    let mut atlas = Atlas::new();
+    let i = atlas.insert(Class::Icon, &icon(8)).unwrap();
+    atlas.insert(Class::Image, &image(8, 8)).unwrap();
+    let id = atlas.sprite(i).tile.atlas;
+    assert_eq!(atlas.page(id).unwrap().class(), Class::Icon);
+    let feed = atlas.external(External {
+        size: geometry::Size::new(64.0, 64.0),
+        fourcc: 0x3231564e,
+        modifier: 0,
+        planes: vec![],
+        generation: 0,
+    });
+    assert!(atlas.page(feed).is_none(), "an external is not a page");
+    assert!(atlas.page(AtlasId(999)).is_none(), "never minted");
+}
+
+#[test]
+#[should_panic(expected = "larger than a 1024 page")]
+fn a_glyph_larger_than_a_page_panics_with_its_size() {
+    let mut atlas = Atlas::new();
+    let inter = atlas.add_font(INTER).unwrap();
+    let (_, w) = atlas.lookup(&[inter], 'W').unwrap();
+    atlas.glyph(inter, w, 2000);
+}
+
+#[test]
+fn image_pages_store_premultiplied() {
+    let mut atlas = Atlas::new();
+    let bitmap = Bitmap {
+        width: 1,
+        height: 1,
+        format: Format::Rgba8,
+        pixels: vec![200, 100, 50, 128],
+    };
+    let id = atlas.insert(Class::Image, &bitmap).unwrap();
+    let origin = |atlas: &Atlas| {
+        let tile = atlas.sprite(id).tile;
+        let page = atlas.page(tile.atlas).unwrap();
+        let i = (tile.bounds.y() as usize * page.size() as usize + tile.bounds.x() as usize) * 4;
+        let px: [u8; 4] = page.level(0)[i..i + 4].try_into().unwrap();
+        px
+    };
+    let want = [100u8, 50, 25, 128];
+    let near = |p: [u8; 4]| p.iter().zip(want).all(|(a, b)| a.abs_diff(b) <= 1);
+    let px = origin(&atlas);
+    assert!(near(px), "premultiplied: {px:?}");
+    // the stored source stays straight: a rescale re-premultiplies once
+    assert!(atlas.set_scale(2.0));
+    let px = origin(&atlas);
+    assert!(near(px), "not double-premultiplied after set_scale: {px:?}");
 }

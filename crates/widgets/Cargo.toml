@@ -11,3 +11,6 @@ geometry.workspace = true
 interactivity.workspace = true
 layout.workspace = true
 paint.workspace = true
+
+[dev-dependencies]
+atlas = { workspace = true, features = ["svg"] }

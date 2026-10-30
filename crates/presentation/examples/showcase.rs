@@ -5,7 +5,7 @@
 use animation::AnimationModule;
 use app::prelude::*;
 use atlas::prelude::*;
-use geometry::{Color, Point, Size};
+use geometry::Color;
 use gles::Budget;
 use interactivity::prelude::*;
 use layout::prelude::*;
@@ -14,6 +14,7 @@ use presentation::prelude::*;
 use render::prelude::*;
 use ring::prelude::*;
 use wayland::prelude::*;
+use widgets::text;
 use window::prelude::*;
 
 struct Leaf;
@@ -85,42 +86,15 @@ impl Widget for Shell {
                 ),
             ),
         );
-        // A word in Inter at 32 px, glyphs placed by hand.
-        let sprites = {
-            let mut atlas = s.resource_mut::<Atlas>();
-            let inter = atlas
-                .add_font(include_bytes!(
-                    "../../atlas/tests/fixtures/Inter-Regular.ttf"
-                ))
-                .expect("Inter loads");
-            let mut pen = 0.0f32;
-            let baseline = 30.0f32;
-            let mut out = Vec::new();
-            for ch in "mecha".chars() {
-                let Some((font, id)) = atlas.lookup(&[inter], ch) else {
-                    continue;
-                };
-                let g = atlas.glyph(font, id, 32);
-                if g.tile.bounds.width() > 0.0 {
-                    out.push(MonochromeSprite::new(
-                        g.tile,
-                        Point::new(pen + g.left, baseline - g.top),
-                        Size::new(g.tile.bounds.width(), g.tile.bounds.height()),
-                        Color::WHITE,
-                    ));
-                }
-                pen += g.advance;
-            }
-            out
-        };
-        s.spawn_with(
-            win,
-            Leaf,
-            (
-                LayoutStyle::default().size(px(200.0), px(40.0)),
-                Paint::Monochrome(sprites),
-            ),
-        );
+        // A word in Inter at 32 px. `Text` shapes in logical pixels and
+        // reshapes on `Rescaled`, so its tiles follow the atlas's scale.
+        let inter = s
+            .resource_mut::<Atlas>()
+            .add_font(include_bytes!(
+                "../../atlas/tests/fixtures/Inter-Regular.ttf"
+            ))
+            .expect("Inter loads");
+        s.spawn(win, text(inter, "mecha").size(32).color(Color::WHITE));
         Shell
     }
 }

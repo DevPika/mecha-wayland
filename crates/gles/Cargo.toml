@@ -12,4 +12,5 @@ khronos-egl.workspace = true
 render.workspace = true
 
 [dev-dependencies]
+atlas = { workspace = true, features = ["svg"] }
 png.workspace = true

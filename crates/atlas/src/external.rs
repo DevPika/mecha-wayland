@@ -50,7 +50,7 @@ impl Atlas {
     pub fn external_mut(&mut self, id: AtlasId) -> &mut External {
         match self.owners[id.0 as usize] {
             Owner::External(i) => &mut self.externals[i as usize],
-            Owner::Page(..) => panic!("{id:?} is a page, not an external"),
+            Owner::Page(..) | Owner::Free => panic!("{id:?} is not an external"),
         }
     }
 
@@ -59,7 +59,7 @@ impl Atlas {
     pub fn external_tile(&self, id: AtlasId) -> AtlasTile {
         let e = match self.owners[id.0 as usize] {
             Owner::External(i) => &self.externals[i as usize],
-            Owner::Page(..) => panic!("{id:?} is a page, not an external"),
+            Owner::Page(..) | Owner::Free => panic!("{id:?} is not an external"),
         };
         AtlasTile {
             atlas: id,
@@ -74,7 +74,7 @@ impl Atlas {
             .enumerate()
             .filter_map(|(n, o)| match *o {
                 Owner::External(i) => Some((AtlasId(n as u32), &self.externals[i as usize])),
-                Owner::Page(..) => None,
+                Owner::Page(..) | Owner::Free => None,
             })
     }
 }
