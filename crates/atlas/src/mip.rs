@@ -94,7 +94,11 @@ impl Page {
                 }
             }
             // Image pages hold premultiplied pixels; the others are single-channel.
-            let alpha = if channels == 4 { Alpha::Premultiplied } else { Alpha::Straight };
+            let alpha = if channels == 4 {
+                Alpha::Premultiplied
+            } else {
+                Alpha::Straight
+            };
             let small = downsample(&region, sw, sh, channels, alpha);
             let (dx, dy, dw, dh) = (sx / 2, sy / 2, (sw / 2).max(1), (sh / 2).max(1));
             let dst_side = Page::dims(k) as usize;
@@ -118,8 +122,13 @@ impl Bitmap {
         let max = max.max(1);
         while self.width > max || self.height > max {
             let channels = self.format.bytes();
-            self.pixels =
-                downsample(&self.pixels, self.width, self.height, channels, Alpha::Straight);
+            self.pixels = downsample(
+                &self.pixels,
+                self.width,
+                self.height,
+                channels,
+                Alpha::Straight,
+            );
             self.width = (self.width / 2).max(1);
             self.height = (self.height / 2).max(1);
         }
@@ -147,7 +156,10 @@ mod tests {
         let out = downsample(&src, 2, 2, 4, Alpha::Straight);
         assert_eq!(out, vec![255, 0, 0, 64]);
         // all transparent stays zero without dividing by zero
-        assert_eq!(downsample(&[0u8; 16], 2, 2, 4, Alpha::Straight), vec![0, 0, 0, 0]);
+        assert_eq!(
+            downsample(&[0u8; 16], 2, 2, 4, Alpha::Straight),
+            vec![0, 0, 0, 0]
+        );
     }
 
     #[test]

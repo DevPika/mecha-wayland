@@ -867,7 +867,10 @@ const SQUARE_SVG: &[u8] =
 fn an_icon_follows_rescale() {
     let mut app = app();
     let root = root(&mut app, 100.0, 100.0);
-    let id = app.resource_mut::<Atlas>().insert_svg(SQUARE_SVG, 20).unwrap();
+    let id = app
+        .resource_mut::<Atlas>()
+        .insert_svg(SQUARE_SVG, 20)
+        .unwrap();
     let red = Color::rgb(1.0, 0.0, 0.0);
     let glyph: Handle<Icon> = app.spawn(root, icon(id).color(red));
     app.tick();
@@ -896,7 +899,10 @@ fn an_icon_follows_rescale() {
 fn an_image_follows_rescale() {
     let mut app = app();
     let root = root(&mut app, 100.0, 100.0);
-    let id = app.resource_mut::<Atlas>().insert_svg(SQUARE_SVG, 20).unwrap();
+    let id = app
+        .resource_mut::<Atlas>()
+        .insert_svg(SQUARE_SVG, 20)
+        .unwrap();
     let photo: Handle<Image> = app.spawn(root, image(id).opacity(0.5));
     app.tick();
     let before = app.resource::<Atlas>().sprite(id).tile;

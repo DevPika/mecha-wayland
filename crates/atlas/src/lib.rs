@@ -219,7 +219,10 @@ enum Owner {
 enum Source {
     /// Rasterized at `ceil(size * scale)` on its longer side.
     #[cfg(feature = "svg")]
-    Svg { bytes: Cow<'static, [u8]>, size: u32 },
+    Svg {
+        bytes: Cow<'static, [u8]>,
+        size: u32,
+    },
     /// Device pixels, re-packed as they are.
     Bitmap { class: Class, bitmap: Bitmap },
 }

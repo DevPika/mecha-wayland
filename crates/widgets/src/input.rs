@@ -555,8 +555,7 @@ impl Widget for Input {
                 let atlas = ctx.resource::<Atlas>();
                 if hidden {
                     let masked = mask(&string);
-                    let masked_off =
-                        crate::text::hit_position(&atlas, font, font_px, &masked, x);
+                    let masked_off = crate::text::hit_position(&atlas, font, font_px, &masked, x);
                     unmask_offset(&string, masked_off)
                 } else {
                     crate::text::hit_position(&atlas, font, font_px, &string, x)

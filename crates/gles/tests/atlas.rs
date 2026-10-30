@@ -297,7 +297,11 @@ fn a_transparent_edge_has_no_dark_fringe() {
     let mut pixels = Vec::with_capacity(32 * 32 * 4);
     for _y in 0..32 {
         for x in 0..32 {
-            let p = if x < 16 { [255, 0, 0, 255] } else { [0, 0, 0, 0] };
+            let p = if x < 16 {
+                [255, 0, 0, 255]
+            } else {
+                [0, 0, 0, 0]
+            };
             pixels.extend_from_slice(&p);
         }
     }
@@ -398,8 +402,14 @@ fn an_icon_sprite_draws_through_its_mips() {
         ],
     };
     let px = draw_one(&mut d, 48, 32, &q, "an_icon_sprite_draws_through_its_mips");
-    assert!(near(pixel(&px, 48, 16, 16), rgb(1.0, 0.0, 0.0), 3), "full size");
-    assert!(near(pixel(&px, 48, 40, 8), rgb(1.0, 0.0, 0.0), 3), "half size");
+    assert!(
+        near(pixel(&px, 48, 16, 16), rgb(1.0, 0.0, 0.0), 3),
+        "full size"
+    );
+    assert!(
+        near(pixel(&px, 48, 40, 8), rgb(1.0, 0.0, 0.0), 3),
+        "half size"
+    );
 }
 
 #[test]
@@ -470,7 +480,10 @@ fn a_reused_id_that_changes_class_draws_from_the_right_array() {
     atlas.set_scale(2.0);
     let g = atlas.glyph(font, id, 14);
     let (rt, gt) = (atlas.sprite(red).tile, atlas.sprite(green).tile);
-    assert_eq!((rt.atlas, gt.atlas, g.tile.atlas), (AtlasId(0), AtlasId(1), AtlasId(2)));
+    assert_eq!(
+        (rt.atlas, gt.atlas, g.tile.atlas),
+        (AtlasId(0), AtlasId(1), AtlasId(2))
+    );
     d.upload(&atlas);
 
     let (w, h) = (g.physical_width as f32, g.physical_height as f32);
@@ -490,8 +503,14 @@ fn a_reused_id_that_changes_class_draws_from_the_right_array() {
         &q,
         "a_reused_id_that_changes_class_draws_from_the_right_array",
     );
-    assert!(near(pixel(&px, 64, 8, 8), rgb(1.0, 0.0, 0.0), 2), "red image");
-    assert!(near(pixel(&px, 64, 24, 8), rgb(0.0, 1.0, 0.0), 2), "green image");
+    assert!(
+        near(pixel(&px, 64, 8, 8), rgb(1.0, 0.0, 0.0), 2),
+        "red image"
+    );
+    assert!(
+        near(pixel(&px, 64, 24, 8), rgb(0.0, 1.0, 0.0), 2),
+        "green image"
+    );
     let mut brightest = 0u8;
     for y in 4..4 + h as u32 {
         for x in 40..40 + w as u32 {

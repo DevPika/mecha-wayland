@@ -41,7 +41,11 @@ fn a_glyph_at_scale_two_is_twice_the_pixels_and_the_same_layout() {
     assert!((g2.top - g1.top).abs() <= 0.5);
     assert_eq!(g2.tile.bounds.width(), g2.physical_width as f32);
     assert_eq!(g2.tile.bounds.height(), g2.physical_height as f32);
-    assert_eq!(g2.size.width, g2.physical_width as f32 / 2.0, "ink size is logical");
+    assert_eq!(
+        g2.size.width,
+        g2.physical_width as f32 / 2.0,
+        "ink size is logical"
+    );
 }
 
 #[cfg(feature = "svg")]
@@ -71,7 +75,11 @@ fn a_raw_bitmap_keeps_its_logical_size() {
     assert!(atlas.set_scale(1.0));
     let s = atlas.sprite(id);
     assert_eq!(s.size, Size::new(20.0, 20.0), "fixed at insert");
-    assert_eq!((s.physical_width, s.physical_height), (40, 40), "re-packed, not resampled");
+    assert_eq!(
+        (s.physical_width, s.physical_height),
+        (40, 40),
+        "re-packed, not resampled"
+    );
     assert_eq!(s.tile.bounds.width(), 40.0);
 }
 
@@ -122,7 +130,10 @@ fn rescaling_many_times_keeps_ids_bounded() {
     for n in 0..50 {
         atlas.set_scale(if n % 2 == 0 { 2.0 } else { 1.0 });
         assert!(atlas.pages().map(|p| p.id().0).max().unwrap() < 4);
-        assert_eq!(atlas.externals().map(|(id, _)| id).collect::<Vec<_>>(), vec![feed]);
+        assert_eq!(
+            atlas.externals().map(|(id, _)| id).collect::<Vec<_>>(),
+            vec![feed]
+        );
         assert_eq!(atlas.class(feed), Class::External);
         assert_eq!(atlas.class(atlas.sprite(icon).tile.atlas), Class::Icon);
         assert_eq!(atlas.class(atlas.sprite(image).tile.atlas), Class::Image);
