@@ -6,7 +6,7 @@ use std::sync::{Mutex, MutexGuard};
 
 use animation::AnimationModule;
 use app::prelude::*;
-use atlas::Atlas;
+use atlas::{Atlas, Rescaled};
 use geometry::{Color, Rect};
 use gles::{Budget, Device, Error};
 use interactivity::prelude::*;
@@ -134,6 +134,12 @@ fn log_scale(app: &mut App, e: &Emitted<ScaleFactorChanged>) {
         .0
         .push(format!("Scale {}", e.event.scale));
 }
+#[derive(Default)]
+struct Rescales(Vec<Vec<NodeId>>);
+impl Resource for Rescales {}
+fn log_rescaled(app: &mut App, e: &Emitted<Rescaled>) {
+    app.resource_mut::<Rescales>().0.push(e.targets.to_vec());
+}
 fn log_close(app: &mut App, e: &Emitted<CloseRequested>) {
     let target = e.targets.iter().next().copied();
     app.resource_mut::<Log>()
@@ -211,8 +217,10 @@ fn fake() -> Option<(MutexGuard<'static, ()>, Fake)> {
         .insert_resource(Atlas::new());
     f.app
         .init_resource::<Log>()
+        .init_resource::<Rescales>()
         .system(log_resized)
         .system(log_scale)
+        .system(log_rescaled)
         .system(log_close)
         .system(log_frame)
         .system(log_contact)
@@ -1478,6 +1486,87 @@ fn a_glyph_resolved_in_a_tick_is_on_the_gpu_before_that_ticks_frame() {
         "the glyph's ink is white on black: {brightest}"
     );
     let _ = w;
+}
+
+#[test]
+fn a_window_scale_rescales_the_atlas() {
+    struct Probe;
+    impl Build for Probe {
+        type Widget = Probe;
+    }
+    impl Widget for Probe {
+        type Builder = Probe;
+        fn build(b: Probe, _: Handle<Self>, _: &mut Spawner<'_, Self>) -> Self {
+            b
+        }
+    }
+    let Some((_gpu, mut f)) = fake() else { return };
+    let a = configured(&mut f, 64, 64);
+    let b = spawn(&mut f, LayoutStyle::default().column());
+    let probe = f.app.spawn(b, Probe).id();
+    f.app.tick();
+    f.turn();
+    let rescaled = |f: &Fake| f.app.resource::<Rescales>().0.clone();
+    assert_eq!(f.app.resource::<Atlas>().scale(), 1.0);
+    assert!(rescaled(&f).is_empty());
+
+    // The window's own handler stores the scale before the `Emitted`
+    // signal reaches the system, or the atlas would still read 1.
+    f.app.emit(ScaleFactorChanged { scale: 2.0 }, a);
+    f.app.tick();
+    f.turn();
+    assert_eq!(f.app.resource::<Atlas>().scale(), 2.0);
+    let got = rescaled(&f);
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert!(got[0].contains(&probe), "{:?}", got[0]);
+    assert!(got[0].contains(&a) && got[0].contains(&b));
+
+    // The same scale again changes nothing.
+    f.app.emit(ScaleFactorChanged { scale: 2.0 }, a);
+    f.app.tick();
+    f.turn();
+    assert_eq!(rescaled(&f).len(), 1);
+
+    // The other window is still 1: the largest wins, so back to 1.
+    f.app.emit(ScaleFactorChanged { scale: 1.0 }, a);
+    f.app.tick();
+    f.turn();
+    assert_eq!(f.app.resource::<Atlas>().scale(), 1.0);
+    assert_eq!(rescaled(&f).len(), 2);
+}
+
+#[test]
+fn a_frame_uploads_before_drawing() {
+    let Some((_gpu, mut f)) = fake() else { return };
+    let win = configured(&mut f, 64, 64);
+    f.requests();
+    repaint(&mut f, win);
+    f.send(CALLBACK, ev::DONE, |w| w.uint(0));
+    f.turn();
+    repaint(&mut f, win);
+    f.send(CALLBACK + 1, ev::DONE, |w| w.uint(0));
+    f.turn();
+    assert!(attaches(&mut f).len() == 1, "both buffers are held now");
+    let before = f.app.resource::<Surfaces>().upload_calls();
+    // A new page's glyph, rasterized after the last tick: `OnChanged<Atlas>`
+    // has not fired, so only the frame itself can upload it.
+    {
+        let mut atlas = f.app.resource_mut::<Atlas>();
+        let inter = atlas
+            .add_font(include_bytes!(
+                "../../atlas/tests/fixtures/Inter-Regular.ttf"
+            ))
+            .unwrap();
+        let (font, id) = atlas.lookup(&[inter], 'a').unwrap();
+        atlas.glyph(font, id, 40);
+    }
+    f.send(BUF_A, ev::RELEASE, |_| {});
+    f.turn();
+    assert_eq!(attaches(&mut f), vec![BUF_A], "the released slot was drawn");
+    assert!(
+        f.app.resource::<Surfaces>().upload_calls() > before,
+        "the frame uploaded the dirty glyph"
+    );
 }
 
 // ── removal ────────────────────────────────────────────────────────────

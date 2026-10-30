@@ -87,7 +87,7 @@
 use std::collections::{HashMap, HashSet};
 
 use app::prelude::*;
-use atlas::Atlas;
+use atlas::{Atlas, Rescaled};
 use geometry::{Rect, Size};
 use gles::{Budget, Device};
 use layout::prelude::*;
@@ -381,6 +381,11 @@ impl Surfaces {
         self.entries.get_mut(&w).map(|e| (w, e))
     }
 
+    /// How many sub-image uploads the device has issued. For tests.
+    pub fn upload_calls(&self) -> u64 {
+        self.device.upload_calls()
+    }
+
     /// The pixels of the slot most recently drawn for `window`, as
     /// `(width, height, RGBA8 rows top-down)`. `None` before the first
     /// frame. For tests.
@@ -469,6 +474,7 @@ impl Module for PresentationModule {
             .system(on_surface)
             .system(on_frame_requested)
             .system(on_atlas_changed)
+            .system(on_scale_changed)
             .system(on_callback)
             .system(on_buffer)
             .system(on_removed)
@@ -799,11 +805,41 @@ fn on_atlas_changed(app: &mut App, _: &OnChanged<Atlas>) {
     surfaces.device.upload(&atlas);
 }
 
+/// The atlas rasterizes at the largest scale any live window reports
+/// (`1.0` for one that has not reported), so no window samples tiles
+/// finer than it can show. A rebuild invalidates every tile a widget
+/// kept, so `Rescaled` goes to each window and all its descendants. This
+/// signal is queued after the window's own `on_scale_factor_changed` ran
+/// (an `Emitted` follows its event's handlers), so `Window::scale` is
+/// already the new value here.
+fn on_scale_changed(app: &mut App, _: &Emitted<ScaleFactorChanged>) {
+    let windows: Vec<(NodeId, f32)> = app
+        .widgets::<Window>()
+        .map(|(id, w)| (id, w.scale()))
+        .collect();
+    let Some(max) = windows.iter().map(|&(_, s)| s).reduce(f32::max) else {
+        return;
+    };
+    if !app.resource_mut::<Atlas>().set_scale(max) {
+        return;
+    }
+    let mut targets = Vec::new();
+    for (id, _) in windows {
+        targets.push(id);
+        targets.extend(app.descendants(id));
+    }
+    app.emit(Rescaled, targets);
+}
+
 /// The drawer and the commit: the last `Frame` system to run.
 fn on_frame(app: &mut App, f: &Frame) {
     let w = f.0;
-    let (mut surfaces, mut wl, mut scenes) =
-        app.query::<(ResMut<Surfaces>, ResMut<Wayland>, ResMut<Scenes>)>();
+    let (mut surfaces, mut wl, mut scenes, atlas) = app.query::<(
+        ResMut<Surfaces>,
+        ResMut<Wayland>,
+        ResMut<Scenes>,
+        Res<Atlas>,
+    )>();
     let s = &mut *surfaces;
     let Some(entry) = s.entries.get_mut(&w) else {
         return;
@@ -851,6 +887,7 @@ fn on_frame(app: &mut App, f: &Frame) {
         return;
     }
     let slot = &mut slots.slots[i];
+    s.device.upload(&atlas);
     s.device.draw(&slot.target, queue);
     if entry.scale != entry.scale_sent {
         entry.surface.set_buffer_scale(&mut wl, entry.scale);
