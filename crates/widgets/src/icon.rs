@@ -1,12 +1,13 @@
 //! `Icon`: one tinted sprite the caller already inserted into the atlas.
 
 use app::{Build, Context, Handle, Spawner, Widget};
-use atlas::{Atlas, AtlasTile, SpriteId};
+use atlas::{Atlas, AtlasTile, Rescaled, SpriteId};
 use geometry::{Color, Point, Size};
 use layout::{LayoutStyle, Measure};
 use paint::{MonochromeSprite, Paint, PaintContext};
 
 pub struct Icon {
+    sprite: SpriteId,
     tile: AtlasTile,
     size: Size,
     color: Color,
@@ -72,7 +73,23 @@ impl Widget for Icon {
             b.color,
         )]);
         *s.component_mut::<Measure>(me).unwrap() = Measure::fixed(size);
+        s.on::<Rescaled>(me, |ctx: &mut Context<'_, Icon>, _| {
+            let id = ctx.me().sprite;
+            let tile = ctx.resource::<Atlas>().sprite(id).tile;
+            let (size, color) = {
+                let w = ctx.me();
+                (w.size, w.color)
+            };
+            ctx.set_paint(Paint::Monochrome(vec![MonochromeSprite::new(
+                tile,
+                Point::ZERO,
+                size,
+                color,
+            )]));
+            ctx.me().tile = tile;
+        });
         Icon {
+            sprite: b.sprite,
             tile: sprite.tile,
             size,
             color: b.color,
@@ -83,7 +100,7 @@ impl Widget for Icon {
 pub trait IconContext {
     fn set_color(&mut self, color: Color);
     /// Redraws at `size` without touching the atlas: a tile is sampled
-    /// at any size up to its master, mipmapped down for anything
+    /// at any size up to its logical master, mipmapped down for anything
     /// smaller. Also rewrites `Measure`, since the widget's own choice
     /// of displayed size is now its natural size.
     fn set_size(&mut self, size: Size);
@@ -127,8 +144,8 @@ impl IconContext for Context<'_, Icon> {
         self.me().size = size;
     }
 
-    fn set_sprite(&mut self, sprite: SpriteId) {
-        let sprite = self.resource::<Atlas>().sprite(sprite);
+    fn set_sprite(&mut self, id: SpriteId) {
+        let sprite = self.resource::<Atlas>().sprite(id);
         if self.me().tile == sprite.tile && self.me().size == sprite.size {
             return;
         }
@@ -141,6 +158,7 @@ impl IconContext for Context<'_, Icon> {
         )]));
         *self.component_mut::<Measure>().unwrap() = Measure::fixed(sprite.size);
         let w = self.me();
+        w.sprite = id;
         w.tile = sprite.tile;
         w.size = sprite.size;
     }
