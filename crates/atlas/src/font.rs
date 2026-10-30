@@ -22,8 +22,9 @@ pub struct Glyph {
     pub advance: f32,
     /// The ink, logical.
     pub size: Size,
-    /// The tile's size in device pixels.
+    /// The tile's width in device pixels.
     pub physical_width: u32,
+    /// The tile's height in device pixels.
     pub physical_height: u32,
 }
 

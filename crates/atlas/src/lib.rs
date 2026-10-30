@@ -184,15 +184,16 @@ pub struct Bitmap {
     pub pixels: Vec<u8>,
 }
 
-/// An icon or an image: its tile and the size it was inserted at, its
-/// master. It is drawn at that size or smaller.
+/// An icon or an image: its tile, in device pixels at the atlas's scale,
+/// and its logical size. It is drawn at that size or smaller.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sprite {
     pub tile: AtlasTile,
-    /// Logical, fixed at insert.
+    /// Logical, fixed at insert; a rebuild keeps it.
     pub size: Size,
-    /// The tile's size in device pixels.
+    /// The tile's width in device pixels.
     pub physical_width: u32,
+    /// The tile's height in device pixels.
     pub physical_height: u32,
 }
 
