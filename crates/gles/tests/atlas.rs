@@ -443,3 +443,60 @@ fn at_scale_two_a_glyph_lands_one_to_one() {
     }
     assert!(ink > 10, "the H has ink");
 }
+
+/// A 600 by 600 opaque image of one colour: too big to share a page.
+fn solid(r: u8, g: u8) -> Bitmap {
+    Bitmap {
+        width: 600,
+        height: 600,
+        format: Format::Rgba8,
+        pixels: [r, g, 0, 255].repeat(600 * 600),
+    }
+}
+
+#[test]
+fn a_reused_id_that_changes_class_draws_from_the_right_array() {
+    let Some((_g, mut d)) = device() else { return };
+    let mut atlas = Atlas::new();
+    let inter = atlas.add_font(INTER).unwrap();
+    let (font, id) = atlas.lookup(&[inter], 'H').unwrap();
+    atlas.glyph(font, id, 14); // id 0: mono layer 0
+    let red = atlas.insert(Class::Image, &solid(255, 0)).unwrap(); // id 1: color layer 0
+    let green = atlas.insert(Class::Image, &solid(0, 255)).unwrap(); // id 2: color layer 1
+    d.upload(&atlas);
+    // A rebuild packs sprites before glyphs: red takes id 0 (color layer 0),
+    // green id 1 (color layer 1), the glyph id 2 (mono). Ids 0 and 1 were
+    // mono and color layer 0 before, so stale entries put green on layer 0.
+    atlas.set_scale(2.0);
+    let g = atlas.glyph(font, id, 14);
+    let (rt, gt) = (atlas.sprite(red).tile, atlas.sprite(green).tile);
+    assert_eq!((rt.atlas, gt.atlas, g.tile.atlas), (AtlasId(0), AtlasId(1), AtlasId(2)));
+    d.upload(&atlas);
+
+    let (w, h) = (g.physical_width as f32, g.physical_height as f32);
+    let mut q = queue(64.0, 32.0, Color::BLACK);
+    q.translucent = Pass {
+        scissor: q.scissor.clone(),
+        commands: vec![
+            image(Rect::new(0.0, 0.0, 16.0, 16.0), rt, false, 1.0),
+            image(Rect::new(16.0, 0.0, 16.0, 16.0), gt, false, 1.0),
+            sprite(Rect::new(40.0, 4.0, w, h), g.tile, Color::WHITE, None),
+        ],
+    };
+    let px = draw_one(
+        &mut d,
+        64,
+        32,
+        &q,
+        "a_reused_id_that_changes_class_draws_from_the_right_array",
+    );
+    assert!(near(pixel(&px, 64, 8, 8), rgb(1.0, 0.0, 0.0), 2), "red image");
+    assert!(near(pixel(&px, 64, 24, 8), rgb(0.0, 1.0, 0.0), 2), "green image");
+    let mut brightest = 0u8;
+    for y in 4..4 + h as u32 {
+        for x in 40..40 + w as u32 {
+            brightest = brightest.max(pixel(&px, 64, x, y)[0]);
+        }
+    }
+    assert!(brightest > 200, "the glyph has ink: {brightest}");
+}
