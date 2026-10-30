@@ -14,16 +14,29 @@
 //!   and `Icon` pages are `R8` coverage, `Image` pages `Rgba8` straight
 //!   alpha; `External` names a texture the atlas does not hold, a dmabuf
 //!   a producer describes with an [`External`]. Pages are 1024 square.
-//! - A glyph is rasterized once per font, glyph id and whole pixel size
-//!   with fontdue, and found again through index vectors, no hashing. An
-//!   icon or image is inserted once at its master size and drawn at that
-//!   size or smaller: its page holds four mip levels the CPU generates.
-//! - Nothing is removed. Every [`AtlasId`], [`SpriteId`] and [`FontId`]
-//!   is a dense index a caller holds for the app's life. A tile never
-//!   moves: the atlas grows by adding pages.
+//! - The atlas has a scale, 1 until [`Atlas::set_scale`] says otherwise.
+//!   Pages hold device pixels; everything a caller lays out with is
+//!   logical: [`Glyph`] placement and advance, [`Line`], kerning,
+//!   [`Sprite::size`]. A tile's bounds are device pixels of its page.
+//! - A glyph is rasterized once per font, glyph id and whole logical
+//!   pixel size, at `round(px * scale)` device pixels, with fontdue, and
+//!   found again through index vectors, no hashing. An icon or image is
+//!   inserted once at its master size and drawn at that size or smaller:
+//!   its page holds four mip levels the CPU generates.
+//! - The atlas keeps the source of everything it packed: each glyph's
+//!   key, each SVG's bytes and logical size, each raw bitmap. A scale
+//!   change scraps every page and packs it all again at the new scale:
+//!   SVGs and glyphs are rasterized anew, bitmaps re-packed as they are.
+//!   [`FontId`] and [`SpriteId`] name what and survive it; tiles name
+//!   where and do not. [`Atlas::generation`] moves on each rebuild, and a
+//!   caller that kept a tile asks again when it does.
+//! - Nothing is removed. A [`SpriteId`] and a [`FontId`] are dense
+//!   indices a caller holds for the app's life. An [`AtlasId`] of an
+//!   external lives as long; a page's id is freed by a rebuild and reused
+//!   by the next page opened.
 //! - Dirty tracking is a 16 by 16 grid of [`Cell`]s per page that serves
-//!   every mip level; a backend uploads each dirty cell once per level and
-//!   a tile is never sent twice.
+//!   every mip level; a backend uploads each dirty cell once per level and,
+//!   between rebuilds, a tile is never sent twice.
 //!
 //! # Quick start
 //!
@@ -53,13 +66,15 @@
 //! assert_eq!(cells, 512, "a second drain has nothing");
 //! ```
 
-use app::Resource;
+use std::borrow::Cow;
+
+use app::{Event, Resource};
 use geometry::{Rect, Size};
 
 pub mod prelude {
     pub use crate::{
         Atlas, AtlasId, AtlasTile, Bitmap, Cell, Class, Error, External, FontId, Format, Glyph,
-        Line, Page, Plane, Sprite, SpriteId,
+        Line, Page, Plane, Rescaled, Sprite, SpriteId,
     };
 }
 
@@ -73,21 +88,20 @@ pub use external::{External, Plane};
 pub use font::{Glyph, Line};
 pub use page::{CELL, CELLS, Cell, PAGE, Page};
 
-/// Which texture a tile is in: a dense index the atlas mints, in creation
-/// order, across every page of every class and every external, so a
-/// backend keys its textures by it with a `Vec`. `default()` is id zero,
-/// the first page ever made. `repr(C)` because a render command embeds
-/// it and is uploaded as is.
+/// Which texture a tile is in: a dense index the atlas mints across every
+/// page of every class and every external, so a backend keys its textures
+/// by it with a `Vec`. A new page takes the lowest id a rebuild freed,
+/// else the next. `default()` is id zero, the first page ever made.
+/// `repr(C)` because a render command embeds it and is uploaded as is.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct AtlasId(pub u32);
 
 /// One rectangle of a texture: `bounds` in whole pixels of that texture,
 /// padding excluded, held as a `Rect` because that is the shared type. A
-/// tile's bounds are stable for the app's life: the atlas grows by adding
-/// pages and never moves a tile. A renderer divides `bounds` by the size
-/// of the texture it uploaded. `repr(C)` because a render command embeds
-/// it and is uploaded as is.
+/// tile holds until the next rebuild, when [`Atlas::generation`] moves.
+/// A renderer divides `bounds` by the size of the texture it uploaded.
+/// `repr(C)` because a render command embeds it and is uploaded as is.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AtlasTile {
@@ -175,8 +189,18 @@ pub struct Bitmap {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Sprite {
     pub tile: AtlasTile,
+    /// Logical, fixed at insert.
     pub size: Size,
+    /// The tile's size in device pixels.
+    pub physical_width: u32,
+    pub physical_height: u32,
 }
+
+/// The window scale the atlas follows changed and it was rebuilt. The
+/// atlas never sends it; whoever calls `set_scale` for a window does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rescaled;
+impl Event for Rescaled {}
 
 /// What an `AtlasId` names.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -185,6 +209,18 @@ enum Owner {
     Page(Class, u32),
     /// An external: its index in the external list.
     External(u32),
+    /// A page id a rebuild freed, for the next page to take.
+    Free,
+}
+
+/// What a sprite was made from, to make it again at another scale.
+#[derive(Debug)]
+enum Source {
+    /// Rasterized at `ceil(size * scale)` on its longer side.
+    #[cfg(feature = "svg")]
+    Svg { bytes: Cow<'static, [u8]>, size: u32 },
+    /// Device pixels, re-packed as they are.
+    Bitmap { class: Class, bitmap: Bitmap },
 }
 
 /// Every pixel a sprite can name, and the ids that name them. A plain
@@ -195,16 +231,22 @@ enum Owner {
 /// `resource::<Atlas>()` so the drain is not itself a write.
 #[derive(Debug)]
 pub struct Atlas {
+    /// Device pixels per logical pixel.
+    scale: f32,
+    /// Effective `set_scale` calls so far.
+    generation: u64,
     /// Indexed by `Class as usize` for the three page classes.
     pages: [Vec<Page>; 3],
     /// Indexed by `AtlasId`.
     owners: Vec<Owner>,
     /// Indexed by `SpriteId`.
     sprites: Vec<Sprite>,
+    /// Indexed by `SpriteId`.
+    sources: Vec<Source>,
     /// Indexed by `FontId`.
     fonts: Vec<font::Font>,
     /// Indexed by the value a font's per-size index vector holds.
-    glyphs: Vec<Glyph>,
+    glyphs: Vec<font::Record>,
     /// Indexed by the index `Owner::External` carries.
     externals: Vec<External>,
 }
@@ -218,23 +260,107 @@ impl Default for Atlas {
 }
 
 impl Atlas {
-    /// Empty: no page, no font, no sprite.
+    /// Empty: no page, no font, no sprite, scale 1.
     pub fn new() -> Atlas {
         Atlas {
+            scale: 1.0,
+            generation: 0,
             pages: [Vec::new(), Vec::new(), Vec::new()],
             owners: Vec::new(),
             sprites: Vec::new(),
+            sources: Vec::new(),
             fonts: Vec::new(),
             glyphs: Vec::new(),
             externals: Vec::new(),
         }
     }
 
-    /// The next id, owned by `owner`.
+    /// Device pixels per logical pixel.
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
+
+    /// Moves by one on every rebuild. A caller that kept a tile asks for
+    /// it again when this is not what it saw.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Rasterize at `scale` from now on. `false`, and nothing done, when
+    /// it is the current scale. Otherwise every page is dropped and its
+    /// id freed, every sprite and glyph record is packed again at the new
+    /// scale under the same id, the generation moves, and `true`. Panics
+    /// on a scale that is not positive and finite, and on a sprite that no
+    /// longer fits an empty page.
+    pub fn set_scale(&mut self, scale: f32) -> bool {
+        assert!(
+            scale.is_finite() && scale > 0.0,
+            "atlas: scale {scale} is not positive and finite"
+        );
+        if scale == self.scale {
+            return false;
+        }
+        self.scale = scale;
+        for owner in &mut self.owners {
+            if let Owner::Page(..) = owner {
+                *owner = Owner::Free;
+            }
+        }
+        for list in &mut self.pages {
+            list.clear();
+        }
+        let sources = std::mem::take(&mut self.sources);
+        for (n, source) in sources.iter().enumerate() {
+            let (class, bitmap) = match source {
+                #[cfg(feature = "svg")]
+                Source::Svg { bytes, size } => (
+                    Class::Icon,
+                    Cow::Owned(
+                        Bitmap::from_svg(bytes, self.master(*size)).expect("it parsed at insert"),
+                    ),
+                ),
+                Source::Bitmap { class, bitmap } => (*class, Cow::Borrowed(bitmap)),
+            };
+            let size = self.sprites[n].size;
+            if !Page::fits(class, bitmap.width, bitmap.height) {
+                panic!(
+                    "atlas: sprite {:?} ({}x{} logical) does not fit a page at scale {scale}",
+                    SpriteId(n as u32),
+                    size.width,
+                    size.height
+                );
+            }
+            let tile = self
+                .place(class, &bitmap)
+                .expect("it fits, and its format was checked at insert");
+            self.sprites[n] = Sprite {
+                tile,
+                size,
+                physical_width: bitmap.width,
+                physical_height: bitmap.height,
+            };
+        }
+        self.sources = sources;
+        for i in 0..self.glyphs.len() {
+            let font::Record { font, id, px, .. } = self.glyphs[i];
+            self.glyphs[i].glyph = self.raster(font, id, px);
+        }
+        self.generation += 1;
+        true
+    }
+
+    /// The lowest freed id, else the next, owned by `owner`.
     fn mint(&mut self, owner: Owner) -> AtlasId {
-        let id = AtlasId(self.owners.len() as u32);
-        self.owners.push(owner);
-        id
+        match self.owners.iter().position(|o| *o == Owner::Free) {
+            Some(i) => {
+                self.owners[i] = owner;
+                AtlasId(i as u32)
+            }
+            None => {
+                self.owners.push(owner);
+                AtlasId(self.owners.len() as u32 - 1)
+            }
+        }
     }
 
     /// Pack `bitmap` into a page of `class`, opening one when no existing
@@ -284,31 +410,79 @@ impl Atlas {
     }
 
     /// Insert an icon (`Class::Icon`, an `R8` bitmap) or an image
-    /// (`Class::Image`, `Rgba8`) at its master size. There is no key: the
-    /// caller keeps the id. `Error::Class` for any other class or a format
-    /// the class does not take; `Error::TooLarge` for a bitmap no empty
-    /// page of the class fits, which `Bitmap::fit` cures. A zero-dimension
-    /// bitmap (`width == 0 || height == 0`) never packs: it returns `Ok`
-    /// with an empty tile, `AtlasTile { atlas: AtlasId::default(), bounds:
-    /// Rect::ZERO }`, mirroring a glyph with no ink.
+    /// (`Class::Image`, `Rgba8`) at its master size. The bitmap is device
+    /// pixels; its logical size is its pixels over the scale at this call,
+    /// for good. The atlas keeps a copy to re-pack on a rebuild, never
+    /// resampled. There is no key: the caller keeps the id. `Error::Class`
+    /// for any other class or a format the class does not take;
+    /// `Error::TooLarge` for a bitmap no empty page of the class fits,
+    /// which `Bitmap::fit` cures. A zero-dimension bitmap (`width == 0 ||
+    /// height == 0`) never packs: it returns `Ok` with an empty tile,
+    /// `AtlasTile { atlas: AtlasId::default(), bounds: Rect::ZERO }`,
+    /// mirroring a glyph with no ink.
     pub fn insert(&mut self, class: Class, bitmap: &Bitmap) -> Result<SpriteId, Error> {
         if !matches!(class, Class::Icon | Class::Image) {
             return Err(Error::Class);
         }
-        let tile = if bitmap.width == 0 || bitmap.height == 0 {
-            AtlasTile {
+        let tile = self.place(class, bitmap)?;
+        let size = Size::new(
+            bitmap.width as f32 / self.scale,
+            bitmap.height as f32 / self.scale,
+        );
+        let source = Source::Bitmap {
+            class,
+            bitmap: bitmap.clone(),
+        };
+        Ok(self.push(tile, size, bitmap, source))
+    }
+
+    /// Insert an SVG as a `Class::Icon` whose longer side is `size`
+    /// logical pixels, rasterized with `Bitmap::from_svg` at
+    /// `ceil(size * scale)` and again on every rebuild. `Error::Svg` if it
+    /// does not parse, `Error::TooLarge` if it cannot fit an empty page.
+    #[cfg(feature = "svg")]
+    pub fn insert_svg(
+        &mut self,
+        bytes: impl Into<Cow<'static, [u8]>>,
+        size: u32,
+    ) -> Result<SpriteId, Error> {
+        let bytes = bytes.into();
+        let bitmap = Bitmap::from_svg(&bytes, self.master(size))?;
+        let tile = self.place(Class::Icon, &bitmap)?;
+        let k = size as f32 / bitmap.width.max(bitmap.height) as f32;
+        let logical = Size::new(bitmap.width as f32 * k, bitmap.height as f32 * k);
+        Ok(self.push(tile, logical, &bitmap, Source::Svg { bytes, size }))
+    }
+
+    /// Device pixels on an SVG's longer side for `size` logical.
+    #[cfg(feature = "svg")]
+    fn master(&self, size: u32) -> u32 {
+        (size as f32 * self.scale).ceil() as u32
+    }
+
+    /// `pack`, but a zero-dimension bitmap takes no room: an empty tile,
+    /// `AtlasTile { atlas: AtlasId::default(), bounds: Rect::ZERO }`.
+    fn place(&mut self, class: Class, bitmap: &Bitmap) -> Result<AtlasTile, Error> {
+        if bitmap.width == 0 || bitmap.height == 0 {
+            return Ok(AtlasTile {
                 atlas: AtlasId::default(),
                 bounds: Rect::ZERO,
-            }
-        } else {
-            self.pack(class, bitmap)?
-        };
+            });
+        }
+        self.pack(class, bitmap)
+    }
+
+    /// Record a new sprite and its source.
+    fn push(&mut self, tile: AtlasTile, size: Size, bitmap: &Bitmap, source: Source) -> SpriteId {
         let id = SpriteId(self.sprites.len() as u32);
         self.sprites.push(Sprite {
             tile,
-            size: Size::new(bitmap.width as f32, bitmap.height as f32),
+            size,
+            physical_width: bitmap.width,
+            physical_height: bitmap.height,
         });
-        Ok(id)
+        self.sources.push(source);
+        id
     }
 
     /// The sprite `id` names. Panics on an id this atlas did not mint.
@@ -318,20 +492,21 @@ impl Atlas {
 
     /// What `id` is: how a backend picks a format, a mip filter and an
     /// import path, and checks a tile reached the right primitive. Panics
-    /// on an id this atlas did not mint.
+    /// on an id this atlas did not mint or a rebuild freed.
     pub fn class(&self, id: AtlasId) -> Class {
         match self.owners[id.0 as usize] {
             Owner::Page(class, _) => class,
             Owner::External(_) => Class::External,
+            Owner::Free => panic!("atlas: {id:?} was freed by a rebuild"),
         }
     }
 
-    /// The page `id` names; `None` for an external or an id this atlas
-    /// did not mint.
+    /// The page `id` names; `None` for an external, a freed id or an id
+    /// this atlas did not mint.
     pub fn page(&self, id: AtlasId) -> Option<&Page> {
         match *self.owners.get(id.0 as usize)? {
             Owner::Page(class, i) => Some(&self.pages[class as usize][i as usize]),
-            Owner::External(_) => None,
+            Owner::External(_) | Owner::Free => None,
         }
     }
 
@@ -339,7 +514,7 @@ impl Atlas {
     pub fn pages(&self) -> impl Iterator<Item = &Page> {
         self.owners.iter().filter_map(|o| match *o {
             Owner::Page(class, i) => Some(&self.pages[class as usize][i as usize]),
-            Owner::External(_) => None,
+            Owner::External(_) | Owner::Free => None,
         })
     }
 
