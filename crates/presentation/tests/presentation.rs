@@ -727,7 +727,8 @@ fn hiding_before_spawn_suppresses_the_first_draw() {
 
 /// What showing a drawn layer window sends: the layer state the unmap
 /// reset, then an empty commit.
-const REMAP_SHAPE: [(u32, u16); 5] = [
+const REMAP_SHAPE: [(u32, u16); 6] = [
+    (XDG, op::LAYER_SET_LAYER),
     (XDG, op::LAYER_SET_ANCHOR),
     (XDG, op::LAYER_SET_ZONE),
     (XDG, op::LAYER_SET_KEYBOARD),
@@ -824,17 +825,19 @@ fn remapping_resends_the_layer_state_the_unmap_reset() {
     assert_eq!(
         shape,
         vec![
+            (XDG, op::LAYER_SET_LAYER),
             (XDG, op::LAYER_SET_ANCHOR),
             (XDG, op::LAYER_SET_ZONE),
             (XDG, op::LAYER_SET_KEYBOARD),
             (XDG, op::LAYER_SET_SIZE),
             (SURFACE, op::COMMIT),
         ],
-        "the unmap reset the layer state, so the remap commit needs it again, with no attach"
+        "the unmap reset the layer state (the layer to background), so the remap commit needs it again, with no attach"
     );
-    assert_eq!(reqs[0].reader().uint(), Some(1 | 4 | 8));
-    assert_eq!(reqs[1].reader().int(), Some(32));
-    let mut r = reqs[3].reader();
+    assert_eq!(reqs[0].reader().uint(), Some(Layer::Top as u32));
+    assert_eq!(reqs[1].reader().uint(), Some(1 | 4 | 8));
+    assert_eq!(reqs[2].reader().int(), Some(32));
+    let mut r = reqs[4].reader();
     assert_eq!((r.uint(), r.uint()), (Some(0), Some(48)));
 
     layer_configure(&mut f, 4);

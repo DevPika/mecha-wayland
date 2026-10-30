@@ -245,7 +245,7 @@ impl Surfaces {
     /// settled but nothing is drawn. Showing it again commits empty so
     /// the compositor sends a fresh initial configure, whose settle draws
     /// the whole window. The unmap also resets the compositor's layer
-    /// state (anchor, zone, keyboard, size), so the show sends it again
+    /// state (layer, anchor, zone, keyboard, size), so the show sends it again
     /// first. A configure that arrives while hidden does not
     /// change this: it was sent before the unmap. A window hidden before
     /// its first buffer is kicked at the end of the tick (`PostTick`).
@@ -286,6 +286,7 @@ impl Surfaces {
             if entry.frames > 0 {
                 entry.configured = false;
                 if let (Shell::Layer(ls), Some((l, size))) = (&entry.shell, &entry.layer) {
+                    ls.set_layer(wl, l.layer);
                     ls.set_anchor(wl, l.anchor);
                     ls.set_exclusive_zone(wl, l.exclusive_zone);
                     ls.set_keyboard_interactivity(wl, l.keyboard_interactivity);
