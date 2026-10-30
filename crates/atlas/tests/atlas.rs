@@ -371,3 +371,42 @@ fn paint_builds_sprites_from_atlas_tiles() {
     assert!(!pic.is_invisible());
     assert_eq!(atlas.class(atlas.sprite(art).tile.atlas), Class::Image);
 }
+
+#[test]
+fn error_displays_its_cause() {
+    let text = Error::TooLarge {
+        width: 2000,
+        height: 10,
+        max: 992,
+    }
+    .to_string();
+    assert!(text.contains("2000") && text.contains("992"), "{text}");
+    let _: Box<dyn std::error::Error> = Error::Class.into();
+}
+
+#[test]
+fn page_finds_a_page_by_id() {
+    let mut atlas = Atlas::new();
+    let i = atlas.insert(Class::Icon, &icon(8)).unwrap();
+    atlas.insert(Class::Image, &image(8, 8)).unwrap();
+    let id = atlas.sprite(i).tile.atlas;
+    assert_eq!(atlas.page(id).unwrap().class(), Class::Icon);
+    let feed = atlas.external(External {
+        size: geometry::Size::new(64.0, 64.0),
+        fourcc: 0x3231564e,
+        modifier: 0,
+        planes: vec![],
+        generation: 0,
+    });
+    assert!(atlas.page(feed).is_none(), "an external is not a page");
+    assert!(atlas.page(AtlasId(999)).is_none(), "never minted");
+}
+
+#[test]
+#[should_panic(expected = "larger than a 1024 page")]
+fn a_glyph_larger_than_a_page_panics_with_its_size() {
+    let mut atlas = Atlas::new();
+    let inter = atlas.add_font(INTER).unwrap();
+    let (_, w) = atlas.lookup(&[inter], 'W').unwrap();
+    atlas.glyph(inter, w, 2000);
+}

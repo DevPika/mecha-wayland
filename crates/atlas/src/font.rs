@@ -4,7 +4,7 @@
 
 use std::borrow::Cow;
 
-use crate::{Atlas, AtlasId, AtlasTile, Bitmap, Class, Error, FontId, Format};
+use crate::{Atlas, AtlasId, AtlasTile, Bitmap, Class, Error, FontId, Format, PAGE, Page};
 
 /// A glyph's tile and what places it, all in device pixels at the size it
 /// was asked for.
@@ -124,7 +124,8 @@ impl Atlas {
     /// The record for `glyph` of `font` at `px`, rasterized and packed
     /// into the `Glyph` class on first sight, returned from the record
     /// list ever after. Panics on a font this atlas did not mint or a
-    /// glyph id past the font's count; ids come from `lookup`.
+    /// glyph id past the font's count; ids come from `lookup`. Panics on a
+    /// glyph whose bitmap cannot fit an empty page.
     pub fn glyph(&mut self, font: FontId, glyph: u16, px: u16) -> Glyph {
         let slot = *self.fonts[font.0 as usize].slot(px, glyph);
         if slot != NONE {
@@ -145,8 +146,14 @@ impl Atlas {
                 format: Format::R8,
                 pixels,
             };
+            if !Page::fits(Class::Glyph, bitmap.width, bitmap.height) {
+                panic!(
+                    "atlas: glyph {glyph} of {font:?} at {px} px is {}x{}, larger than a {PAGE} page",
+                    bitmap.width, bitmap.height
+                );
+            }
             self.pack(Class::Glyph, &bitmap)
-                .expect("a glyph bitmap is R8 and far smaller than a page")
+                .expect("a glyph bitmap is R8 and fits a page")
         };
         let record = Glyph {
             tile,

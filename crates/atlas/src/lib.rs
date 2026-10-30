@@ -326,6 +326,15 @@ impl Atlas {
         }
     }
 
+    /// The page `id` names; `None` for an external or an id this atlas
+    /// did not mint.
+    pub fn page(&self, id: AtlasId) -> Option<&Page> {
+        match *self.owners.get(id.0 as usize)? {
+            Owner::Page(class, i) => Some(&self.pages[class as usize][i as usize]),
+            Owner::External(_) => None,
+        }
+    }
+
     /// Every page, in id order.
     pub fn pages(&self) -> impl Iterator<Item = &Page> {
         self.owners.iter().filter_map(|o| match *o {
@@ -377,6 +386,35 @@ pub enum Error {
     /// The bytes are not an SVG resvg parses.
     #[cfg(feature = "svg")]
     Svg(resvg::usvg::Error),
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Font(why) => write!(f, "font rejected: {why}"),
+            Error::Class => {
+                f.write_str("class does not take that bitmap format, or takes no inserts")
+            }
+            Error::TooLarge { width, height, max } => write!(
+                f,
+                "bitmap {width}x{height} does not fit an empty page (max side {max})"
+            ),
+            Error::Png(e) => write!(f, "png: {e}"),
+            #[cfg(feature = "svg")]
+            Error::Svg(e) => write!(f, "svg: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Error::Png(e) => Some(e),
+            #[cfg(feature = "svg")]
+            Error::Svg(e) => Some(e),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(test)]
