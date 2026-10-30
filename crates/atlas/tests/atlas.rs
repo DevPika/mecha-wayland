@@ -182,8 +182,8 @@ fn a_backend_reads_a_dirty_cell_at_every_level() {
         let i = (cy * side + cx) * 4;
         assert_eq!(
             &out[i..i + 4],
-            &[128, 128, 128, 128],
-            "level {k} holds the image's grey"
+            &[64, 64, 64, 128],
+            "level {k} holds the image's grey, premultiplied"
         );
     }
 }
@@ -409,4 +409,31 @@ fn a_glyph_larger_than_a_page_panics_with_its_size() {
     let inter = atlas.add_font(INTER).unwrap();
     let (_, w) = atlas.lookup(&[inter], 'W').unwrap();
     atlas.glyph(inter, w, 2000);
+}
+
+#[test]
+fn image_pages_store_premultiplied() {
+    let mut atlas = Atlas::new();
+    let bitmap = Bitmap {
+        width: 1,
+        height: 1,
+        format: Format::Rgba8,
+        pixels: vec![200, 100, 50, 128],
+    };
+    let id = atlas.insert(Class::Image, &bitmap).unwrap();
+    let origin = |atlas: &Atlas| {
+        let tile = atlas.sprite(id).tile;
+        let page = atlas.page(tile.atlas).unwrap();
+        let i = (tile.bounds.y() as usize * page.size() as usize + tile.bounds.x() as usize) * 4;
+        let px: [u8; 4] = page.level(0)[i..i + 4].try_into().unwrap();
+        px
+    };
+    let want = [100u8, 50, 25, 128];
+    let near = |p: [u8; 4]| p.iter().zip(want).all(|(a, b)| a.abs_diff(b) <= 1);
+    let px = origin(&atlas);
+    assert!(near(px), "premultiplied: {px:?}");
+    // the stored source stays straight: a rescale re-premultiplies once
+    assert!(atlas.set_scale(2.0));
+    let px = origin(&atlas);
+    assert!(near(px), "not double-premultiplied after set_scale: {px:?}");
 }

@@ -175,7 +175,7 @@ pub struct SpriteId(pub u32);
 pub struct FontId(pub u16);
 
 /// Pixels to insert: `width * height * format.bytes()` bytes, row-major,
-/// tightly packed, straight alpha.
+/// tightly packed, straight alpha. An `Image` page stores it premultiplied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bitmap {
     pub width: u32,
@@ -399,7 +399,19 @@ impl Atlas {
             }
         };
         let page = &mut self.pages[list][i];
-        page.write(rect, bitmap);
+        if class == Class::Image {
+            // Pages hold premultiplied pixels; the stored source stays straight.
+            let mut pre = bitmap.clone();
+            for px in pre.pixels.chunks_exact_mut(4) {
+                let a = px[3] as u32;
+                for c in &mut px[..3] {
+                    *c = ((*c as u32 * a + 127) / 255) as u8;
+                }
+            }
+            page.write(rect, &pre);
+        } else {
+            page.write(rect, bitmap);
+        }
         if class.levels() > 1 {
             page.regenerate(rect);
         }

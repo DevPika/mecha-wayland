@@ -286,3 +286,52 @@ fn a_page_id_is_looked_up_even_when_pages_of_both_kinds_interleave() {
     assert!(near(pixel(&px, 32, 4, 16), rgb(1.0, 0.0, 0.0), 2));
     assert!(near(pixel(&px, 32, 27, 16), rgb(0.0, 1.0, 0.0), 2));
 }
+
+#[test]
+fn a_transparent_edge_has_no_dark_fringe() {
+    let Some((_g, mut d)) = device() else { return };
+    let mut pixels = Vec::with_capacity(32 * 32 * 4);
+    for _y in 0..32 {
+        for x in 0..32 {
+            let p = if x < 16 { [255, 0, 0, 255] } else { [0, 0, 0, 0] };
+            pixels.extend_from_slice(&p);
+        }
+    }
+    let bitmap = Bitmap {
+        width: 32,
+        height: 32,
+        format: Format::Rgba8,
+        pixels,
+    };
+    let mut atlas = Atlas::new();
+    let id = atlas.insert(Class::Image, &bitmap).unwrap();
+    let tile = atlas.sprite(id).tile;
+    d.upload(&atlas);
+
+    let mut q = queue(48.0, 48.0, Color::TRANSPARENT);
+    q.translucent = Pass {
+        scissor: q.scissor.clone(),
+        commands: vec![image(Rect::new(0.0, 0.0, 48.0, 48.0), tile, false, 1.0)],
+    };
+    let px = draw_one(&mut d, 48, 48, &q, "a_transparent_edge_has_no_dark_fringe");
+    // The target is XRGB8888, so alpha reads back as 255 and the pixel is
+    // the sprite composited over the black clear: red == coverage, which the
+    // premultiplied bilinear ramp makes linear between the two texel centres
+    // (device x 22.75 and 24.25 at 1.5x). Straight filtering gave coverage squared.
+    let mut seen = 0;
+    for x in 22..26u32 {
+        let u = (x as f32 + 0.5) / 1.5;
+        let cov = (16.5 - u).clamp(0.0, 1.0);
+        let want = (cov * 255.0).round() as i32;
+        let p = pixel(&px, 48, x, 24);
+        if want > 8 && want < 247 {
+            seen += 1;
+        }
+        assert!(
+            (p[0] as i32 - want).abs() <= 6 && p[1] == 0 && p[2] == 0,
+            "x {x}: red {} should be the coverage {want}: {p:?}",
+            p[0]
+        );
+    }
+    assert!(seen >= 2, "the ramp had fewer than two partial pixels");
+}
