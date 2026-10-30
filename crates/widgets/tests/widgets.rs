@@ -224,6 +224,59 @@ fn a_text_paints_a_monochrome_run_sized_to_its_content() {
     assert!(rect(&app, label.id()).height() > 0.0);
 }
 
+fn sprite_tiles(app: &App, id: NodeId) -> Vec<AtlasTile> {
+    match app.component::<Paint>(id).unwrap() {
+        Paint::Monochrome(sprites) => sprites.iter().map(|s| s.tile).collect(),
+        other => panic!("expected a Monochrome run, got {other:?}"),
+    }
+}
+
+fn fresh_tiles(app: &mut App, font: FontId, string: &str, px: u16) -> Vec<AtlasTile> {
+    let mut atlas = app.resource_mut::<Atlas>();
+    string
+        .chars()
+        .filter_map(|c| {
+            let (f, id) = atlas.lookup(&[font], c)?;
+            Some(atlas.glyph(f, id, px).tile)
+        })
+        .filter(|t| t.bounds.width() > 0.0)
+        .collect()
+}
+
+#[test]
+fn a_text_reshapes_on_rescale() {
+    let mut app = app();
+    let root = root(&mut app, 200.0, 100.0);
+    let font = app.resource_mut::<Atlas>().add_font(INTER).unwrap();
+    let label: Handle<Text> = app.spawn(root, text(font, "hi").size(16));
+    app.tick();
+    let size = rect(&app, label.id()).size;
+    let before = sprite_tiles(&app, label.id());
+
+    app.resource_mut::<Atlas>().set_scale(2.0);
+    app.emit(Rescaled, label.id());
+    app.tick();
+
+    let after = sprite_tiles(&app, label.id());
+    assert_ne!(before, after);
+    assert_eq!(after, fresh_tiles(&mut app, font, "hi", 16));
+    assert_eq!(rect(&app, label.id()).size, size, "Measure is unchanged");
+}
+
+#[test]
+fn a_text_built_after_rescale_is_sharp() {
+    let mut app = app();
+    let root = root(&mut app, 200.0, 100.0);
+    let font = app.resource_mut::<Atlas>().add_font(INTER).unwrap();
+    app.resource_mut::<Atlas>().set_scale(2.0);
+    let label: Handle<Text> = app.spawn(root, text(font, "hi").size(16));
+    app.tick();
+    assert_eq!(
+        sprite_tiles(&app, label.id()),
+        fresh_tiles(&mut app, font, "hi", 16)
+    );
+}
+
 #[test]
 fn text_context_set_text_reshapes_and_relayouts() {
     let mut app = app();
