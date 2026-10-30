@@ -30,6 +30,11 @@
 //!   replaces the slots and kicks.
 //! - The atlas is uploaded on `OnChanged<Atlas>`, which the core queues
 //!   at `PostTick` ahead of any frame request the same tick raises.
+//! - A rescale rebuilds the atlas, and every tile a displayed paint holds
+//!   is then stale until the widgets' `Rescaled` paint has been copied to
+//!   `AnimatedPaint` at the next `PostTick`. No frame draws in between:
+//!   one that comes declines and wants again, and the windows are kicked
+//!   once the copy ran.
 //! - Removal destroys the role objects, the buffers and targets, and the
 //!   surface.
 //!
@@ -187,6 +192,7 @@ pub struct Surfaces {
     /// Windows shown while still configured; `kick` needs the `App`, so
     /// `on_post_tick` kicks them.
     to_kick: Vec<NodeId>,
+    rescale: Rescale,
     owner: HashMap<ObjectId, NodeId>,
     layer_shell: Option<ZwlrLayerShellV1>,
     compositor: WlCompositor,
@@ -196,6 +202,25 @@ pub struct Surfaces {
     modifiers: Vec<u64>,
 }
 impl Resource for Surfaces {}
+
+/// Where the paint stands against the atlas's last rebuild.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Rescale {
+    /// The displayed paint holds current tiles.
+    Settled,
+    /// The atlas was rebuilt; the widgets' new paint has not been drained.
+    Pending,
+    /// The drain is queued: [`Drained`] follows the copy to
+    /// `AnimatedPaint`.
+    Draining,
+}
+
+/// Emitted at `PostTick` after a rebuild. Paint's drain is a `PostTick`
+/// system registered before presentation's, so its `OnChanged<Paint>`
+/// is queued first, and that event's `Emitted`, which animation copies
+/// to `AnimatedPaint` on, is signalled before this one's.
+struct Drained;
+impl Event for Drained {}
 
 impl Surfaces {
     pub fn surface_of(&self, window: NodeId) -> Option<WlSurface> {
@@ -452,6 +477,7 @@ impl Module for PresentationModule {
             pending_hidden: HashSet::new(),
             pending_layer: HashMap::new(),
             to_kick: Vec::new(),
+            rescale: Rescale::Settled,
             owner: HashMap::new(),
             layer_shell,
             app_id: self.app_id,
@@ -479,6 +505,7 @@ impl Module for PresentationModule {
             .system(on_buffer)
             .system(on_removed)
             .system(on_post_tick)
+            .system(on_drained)
             .system(on_frame);
     }
 }
@@ -823,12 +850,29 @@ fn on_scale_changed(app: &mut App, _: &Emitted<ScaleFactorChanged>) {
     if !app.resource_mut::<Atlas>().set_scale(max) {
         return;
     }
+    app.resource_mut::<Surfaces>().rescale = Rescale::Pending;
     let mut targets = Vec::new();
     for (id, _) in windows {
         targets.push(id);
         targets.extend(app.descendants(id));
     }
     app.emit(Rescaled, targets);
+}
+
+/// The paint the last rebuild caused is displayed now: every window may
+/// draw again. A rebuild since the drain was queued leaves it pending.
+fn on_drained(app: &mut App, _: &Emitted<Drained>) {
+    let windows: Vec<NodeId> = {
+        let mut surfaces = app.resource_mut::<Surfaces>();
+        if surfaces.rescale != Rescale::Draining {
+            return;
+        }
+        surfaces.rescale = Rescale::Settled;
+        surfaces.entries.keys().copied().collect()
+    };
+    for w in windows {
+        kick(app, w);
+    }
 }
 
 /// The drawer and the commit: the last `Frame` system to run.
@@ -854,6 +898,16 @@ fn on_frame(app: &mut App, f: &Frame) {
     let Some(slots) = entry.slots.as_mut() else {
         return;
     };
+    if s.rescale != Rescale::Settled {
+        // The atlas is newer than the paint render just walked. Render
+        // kept this walk's damage, which no slot will hold, so every
+        // slot redraws whole; `on_drained` kicks.
+        for slot in &mut slots.slots {
+            slot.drawn = None;
+        }
+        entry.wanting = true;
+        return;
+    }
     let Some(i) = slots.free_slot() else {
         entry.wanting = true;
         return;
@@ -934,11 +988,22 @@ fn on_callback(app: &mut App, e: &WlCallbackEvent) {
     kick(app, w);
 }
 
-/// Kick the windows `set_mapped` showed while they were still configured.
+/// Kick the windows `set_mapped` showed while they were still configured,
+/// and after a rebuild queue [`Drained`] behind paint's drain.
 fn on_post_tick(app: &mut App, _: &PostTick) {
-    let windows = std::mem::take(&mut app.resource_mut::<Surfaces>().to_kick);
+    let (windows, drain) = {
+        let mut surfaces = app.resource_mut::<Surfaces>();
+        let drain = surfaces.rescale == Rescale::Pending;
+        if drain {
+            surfaces.rescale = Rescale::Draining;
+        }
+        (std::mem::take(&mut surfaces.to_kick), drain)
+    };
     for w in windows {
         kick(app, w);
+    }
+    if drain {
+        app.emit(Drained, Vec::new());
     }
 }
 
