@@ -17,6 +17,7 @@ const SLACK: Duration = Duration::from_millis(1);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     Timeout,
+    Interval,
 }
 
 struct Entry {
@@ -59,6 +60,7 @@ impl Timers {
     }
 
     pub(crate) fn register(&mut self, owner: NodeId, kind: Kind, dur: Duration) -> TimerId {
+        assert_period(kind, dur);
         self.next += 1;
         let id = TimerId(self.next);
         self.timers.insert(
@@ -91,6 +93,29 @@ impl Timers {
                 e.needs_submit = true;
             }
         }
+        true
+    }
+
+    /// [`Timers::start`] with `dur` as the timer's duration from now on;
+    /// for an interval, its period.
+    pub(crate) fn start_for(&mut self, id: TimerId, dur: Duration, now: Instant) -> bool {
+        let Some(e) = self.timers.get_mut(&id) else {
+            return false;
+        };
+        assert_period(e.kind, dur);
+        e.dur = dur;
+        self.start(id, now)
+    }
+
+    /// Stop `id`; it can be started again. Its op in flight, if any,
+    /// goes stale and is dropped when it completes.
+    pub(crate) fn cancel(&mut self, id: TimerId) -> bool {
+        let Some(e) = self.timers.get_mut(&id) else {
+            return false;
+        };
+        e.deadline = None;
+        e.current = None;
+        e.needs_submit = false;
         true
     }
 
@@ -137,6 +162,12 @@ impl Timers {
         }
         match e.kind {
             Kind::Timeout => e.deadline = None,
+            // From the fire, not the missed deadline: a late tick shifts
+            // the rest later rather than firing to catch up.
+            Kind::Interval => {
+                e.deadline = Some(now + e.dur);
+                e.needs_submit = true;
+            }
         }
         Some((e.owner, id))
     }
@@ -154,4 +185,13 @@ impl Timers {
             e.needs_submit = e.deadline.is_some();
         }
     }
+}
+
+/// An interval of zero would fire every turn and never let the runner
+/// block: a caller bug.
+fn assert_period(kind: Kind, dur: Duration) {
+    assert!(
+        !(kind == Kind::Interval && dur.is_zero()),
+        "zero-length interval"
+    );
 }

@@ -8,11 +8,11 @@ mod ext;
 mod systems;
 mod timers;
 
-pub use ext::SpawnerTimers;
+pub use ext::{ContextTimers, SpawnerTimers};
 pub use timers::Timers;
 
 pub mod prelude {
-    pub use crate::{SpawnerTimers, Timeout, TimerId, TimerModule, Timers};
+    pub use crate::{ContextTimers, SpawnerTimers, Timeout, TimerId, TimerModule, Timers};
 }
 
 /// The name of one timer. Never reused within a run.
