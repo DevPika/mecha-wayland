@@ -14,6 +14,15 @@ use crate::TimerId;
 /// for the rest, so a timeout never chases its own tail in tiny ops.
 const SLACK: Duration = Duration::from_millis(1);
 
+/// The furthest a deadline goes. A duration past it, `Duration::MAX` as
+/// "never" included, waits this long instead of overflowing `Instant`.
+const FAR: Duration = Duration::from_secs(365 * 24 * 60 * 60);
+
+/// `dur` from `now`, clamped to [`FAR`].
+fn due(now: Instant, dur: Duration) -> Instant {
+    now + dur.min(FAR)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
     Timeout,
@@ -84,7 +93,7 @@ impl Timers {
         let Some(e) = self.timers.get_mut(&id) else {
             return false;
         };
-        let deadline = now + e.dur;
+        let deadline = due(now, e.dur);
         e.deadline = Some(deadline);
         match e.current {
             Some((_, submitted)) if deadline >= submitted => {}
@@ -107,14 +116,15 @@ impl Timers {
         self.start(id, now)
     }
 
-    /// Stop `id`; it can be started again. Its op in flight, if any,
-    /// goes stale and is dropped when it completes.
+    /// Stop `id`; it can be started again. Its op in flight, if any, is
+    /// kept: a start before it completes reuses it as any restart does,
+    /// and otherwise its completion finds the timer stopped and is
+    /// dropped. Cancel-then-start on every input adds no op.
     pub(crate) fn cancel(&mut self, id: TimerId) -> bool {
         let Some(e) = self.timers.get_mut(&id) else {
             return false;
         };
         e.deadline = None;
-        e.current = None;
         e.needs_submit = false;
         true
     }
@@ -176,7 +186,7 @@ impl Timers {
             // From the fire, not the missed deadline: a late tick shifts
             // the rest later rather than firing to catch up.
             Kind::Interval => {
-                e.deadline = Some(now + e.dur);
+                e.deadline = Some(due(now, e.dur));
                 e.needs_submit = true;
             }
         }

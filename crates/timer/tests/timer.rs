@@ -343,6 +343,30 @@ fn restarts_do_not_grow_in_flight() {
 }
 
 #[test]
+fn cancel_then_start_storm_does_not_grow_in_flight() {
+    let mut app = app();
+    let p = probe(&mut app, Setup::AddTimeout(Duration::from_secs(30)));
+    for _ in 0..200 {
+        poke(&mut app, p, Cmd::CancelThenStart);
+        app.tick();
+        submit(&mut app);
+        let n = app.resource::<Timers>().in_flight();
+        assert!(n <= 2, "{n} ops in flight");
+    }
+}
+
+#[test]
+fn huge_duration_does_not_panic() {
+    let mut app = app();
+    let p = probe(&mut app, Setup::Timeout(Duration::MAX));
+    submit(&mut app);
+    poke(&mut app, p, Cmd::StartFor(Duration::MAX));
+    submit(&mut app);
+    assert!(app.resource::<Timers>().is_running(ids(&app)[0]));
+    assert!(fires(&app).is_empty());
+}
+
+#[test]
 fn zero_timeout_fires_once() {
     let mut app = app();
     probe(&mut app, Setup::Timeout(Duration::ZERO));
